@@ -87,9 +87,25 @@ forward(op::AbstractKernelOp, k::AbstractKernel, args...) = call_binary(op, k, :
 Gradients of `forward(op, kernel, args...)`, one per argument (`nothing` for one with none), given
 its outputs `outs` and their `cotangents`. No default: overload it to make an op differentiable.
 """
-backward(op::AbstractKernelOp, k::AbstractKernel, args, outs, cots) = throw(ArgumentError(
-    "op `:$(opname(op))` kernel `:$(kernelname(k))` has no `backward`; overload " *
-    "`KernelOps.backward` to differentiate it"))
+function backward(op::AbstractKernelOp, k::AbstractKernel, args, outs, cots)
+    msg = "op `:$(opname(op))` kernel `:$(kernelname(k))` has no `backward`; overload " *
+        "`KernelOps.backward(op, kernel, args, outs, cotangents)` to differentiate it"
+    _has_bwd(op, k, args) && (msg *= ". Its variant for these arguments has a `:bwd` binary: call " *
+        "it there with `call_binary(op, kernel, :bwd, ...)` and return one gradient per argument " *
+        "(`nothing` for one with none)")
+    throw(ArgumentError(msg * "."))
+end
+
+# Whether the variant serving `args` has a `:bwd` binary, for the error above. Looks only at the
+# registered variants: it never builds one (`build!`) just to word an error.
+function _has_bwd(op, k, args)
+    v = try
+        _lookup(op, k, variants(op, k), variant_key(op, k, args...))
+    catch
+        nothing
+    end
+    return !isnothing(v) && haskey(v, :bwd)
+end
 
 """`variant_key(op, kernel, args...) -> Tuple`: which tuned variant serves these arguments. Default `()`."""
 variant_key(::AbstractKernelOp, ::AbstractKernel, args...) = ()
