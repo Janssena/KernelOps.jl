@@ -35,6 +35,7 @@ public opname, default_kernel, @default_kernel, default_candidates, kernelname, 
 A zero-filled array of `T` on the same device (or in the same trace) as `proto`: for `forward`
 overloads that need a placeholder. The Reactant extension specialises it for traced arrays.
 """
-device_zeros(proto, ::Type{T}, dims::Integer...) where {T} = fill!(similar(proto, T, Int.(dims)), zero(T))
+device_zeros(proto, ::Type{T}, dims::Integer...) where {T} = 
+    fill!(similar(proto, T, Int.(dims)), zero(T))
 
 end

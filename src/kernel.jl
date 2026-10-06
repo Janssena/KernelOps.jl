@@ -131,12 +131,23 @@ Make `kernel` available to `op` (and `op` known by its name), loading the kernel
 variants. `select = true` also selects it ([`use_kernel!`](@ref)).
 
 These tables are filled at run time: a package declaring ops registers its kernels in `__init__`
-(registrations made while it precompiles are not kept).
+(registrations made while it precompiles are not kept). Registering the same kernel again is a no-op
+apart from reloading its manifest; a DIFFERENT kernel under a name the op already has throws, since
+the two would share one entry, one directory and one manifest.
+
+Another package can register its own kernel for an op (its `kernelname` must be new to the op) and
+select it with [`use_kernel!`](@ref). Only the op's own package can make a kernel its persisted
+default ([`@default_kernel`](@ref)).
 """
 function register_kernel!(op::AbstractKernelOp, k::AbstractKernel; select::Bool=false)
     on, kn = opname(op), kernelname(k)
+    ks = get!(() -> Dict{Symbol,AbstractKernel}(), KERNELS, on)
+    prev = get(ks, kn, nothing)
+    (isnothing(prev) || typeof(prev) === typeof(k)) || throw(ArgumentError(
+        "op `:$on` already has a kernel named `:$kn` ($(typeof(prev)), from " *
+        "$(parentmodule(typeof(prev)))); give $(typeof(k)) another `kernelname`"))
     OPS[on] = op
-    get!(() -> Dict{Symbol,AbstractKernel}(), KERNELS, on)[kn] = k
+    ks[kn] = k
     merge!(variants(op, k), load_manifest(op, k))
     select && use_kernel!(op, kn)
     return k
@@ -192,20 +203,36 @@ end
 
 """
     use_kernel!(op, kernel_name) -> Symbol
+    use_kernel!(op, kernel) -> Symbol
 
 Select which kernel `op` runs for the rest of the session, overriding its [`default_kernel`](@ref).
-`op` is the op (`Axpy()`), its type (`Axpy`) or its name (`:axpy`). Not persisted: see
-[`set_default_kernel!`](@ref).
+`op` is the op (`Axpy()`), its type (`Axpy`) or its name (`:axpy`); the kernel is its name (`:plain`)
+or the kernel itself (`AxpyPlain()`), which must be the one registered under its name. Not persisted:
+see [`set_default_kernel!`](@ref).
 
 The selection is a method, so op calls stay inferred; code calling the op recompiles on its next call.
 It takes effect from the NEXT top-level expression (REPL input, script statement): later in the same
 function or `begin`/`let` block the op call throws, rather than run the previous kernel. Use
 [`with_kernel`](@ref) to switch and run in one go. (A `@testset` body sees it at once.)
 """
+function use_kernel!(op, k::AbstractKernel)
+    o = _op(op)
+    _set_override!(o, _registered(o, k))
+    return kernelname(k)
+end
+
 function use_kernel!(op, kname::Symbol)
     o = _op(op)
-    _set_override!(o, _kernel(o, kname))
-    return kname
+    return use_kernel!(o, _kernel(o, kname))
+end
+
+# `k` as registered for `o`: a kernel that merely shares a registered kernel's name must not select it.
+function _registered(o::AbstractKernelOp, k::AbstractKernel)
+    reg = _kernel(o, kernelname(k))
+    typeof(reg) === typeof(k) || throw(ArgumentError(
+        "$(typeof(k)) is not registered for op `:$(opname(o))`: its name `:$(kernelname(k))` belongs " *
+        "to $(typeof(reg)). Register it with `register_kernel!` under another name."))
+    return reg
 end
 
 function _kernel(o::AbstractKernelOp, kname::Symbol)
@@ -220,14 +247,16 @@ reset_kernel!(op) = (_set_override!(_op(op), nothing); nothing)
 
 """
     with_kernel(f, op, kernel_name)
+    with_kernel(f, op, kernel)
 
-Run `f()` with `op` switched to `kernel_name` (in the newest world, so the switch is visible), then
+Run `f()` with `op` switched to `kernel_name` (or `kernel`, as in [`use_kernel!`](@ref)) (in the newest world, so the switch is visible), then
 restore the previous selection. For comparing kernels from inside one function.
 """
-function with_kernel(f, op, kname::Symbol)
+function with_kernel(f, op, k::AbstractKernel)
     o = _op(op)
+    reg = _registered(o, k)
     prev = Base.invokelatest(_override, o)
-    _set_override!(o, _kernel(o, kname))
+    _set_override!(o, reg)
     try
         return Base.invokelatest(f)
     finally
@@ -235,10 +264,15 @@ function with_kernel(f, op, kname::Symbol)
     end
 end
 
+function with_kernel(f, op, kname::Symbol)
+    o = _op(op)
+    return with_kernel(f, o, _kernel(o, kname))
+end
+
 """`current_kernel(op) -> Symbol or nothing`: the kernel `op` runs (as of the newest world)."""
 function current_kernel(op)
     k = Base.invokelatest(_selected, _op(op))
-    return k === nothing ? nothing : kernelname(k)
+    return isnothing(k) ? nothing : kernelname(k)
 end
 
 """`list_kernels(op)`: every kernel of `op`, its variant count, and which is selected."""
@@ -254,7 +288,7 @@ _selected(op::AbstractKernelOp) = (k = _override(op); k === nothing ? default_ke
 function selected_kernel(op::AbstractKernelOp)
     _switch_epoch() == SWITCH_EPOCH[] || throw_stale_switch(op)
     k = _selected(op)
-    k === nothing && throw_no_kernel(op)
+    isnothing(k) && throw_no_kernel(op)
     return k
 end
 
@@ -277,10 +311,10 @@ its [`build!`](@ref) creates. Throws when none exists.
 function variant(op::AbstractKernelOp, k::AbstractKernel, key::Tuple)
     vs = variants(op, k)
     v = _lookup(op, k, vs, key)
-    v === nothing || return v
+    isnothing(v) || return v
     build!(op, k, key)
     v = _lookup(op, k, vs, key)
-    v === nothing || return v
+    isnothing(v) || return v
     throw(ArgumentError("kernel `:$(kernelname(k))` of op `:$(opname(op))` has no variant for key " *
         "$key. Registered: $(sort(collect(keys(vs)); by=string))"))
 end
@@ -289,7 +323,7 @@ function _lookup(op, k, vs, key)
     haskey(vs, key) && return vs[key]
     isempty(vs) && return nothing
     nk = nearest(op, k, keys(vs), key)
-    return nk === nothing ? nothing : vs[nk]
+    return isnothing(nk) ? nothing : vs[nk]
 end
 
 # --- manifest: one TOML per (op, kernel) -------------------------------------------------------------
@@ -362,7 +396,7 @@ function load_manifest(op, k)
                 v[Symbol(bd["name"])] = KernelBinary(file, bd["entry"], bd["threadgroup"],
                     NamedTuple(Symbol(p) => x for (p, x) in bd["params"]), get(bd, "ka", false))
             end
-            v === nothing || (out[_key_parse(vd["key"])] = v)
+            isnothing(v) || (out[_key_parse(vd["key"])] = v)
         end
     catch
     end
