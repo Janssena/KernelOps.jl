@@ -301,6 +301,14 @@ end
 
 _selected(op::AbstractKernelOp) = (k = _override(op); k === nothing ? default_kernel(op) : k)
 
+"""
+    selected_kernel(op) -> kernel
+
+The kernel `op` runs now: the [`use_kernel!`](@ref) override, else its [`default_kernel`](@ref). Unlike
+[`current_kernel`](@ref), which returns the NAME as of the newest world, this returns the kernel itself and
+is inferred, so it is what to call (and dispatch on) from code that runs the op. Throws when none is
+selected, and on a call from code compiled before the latest switch (see [`with_kernel`](@ref)).
+"""
 function selected_kernel(op::AbstractKernelOp)
     _switch_epoch() == SWITCH_EPOCH[] || throw_stale_switch(op)
     k = _selected(op)
