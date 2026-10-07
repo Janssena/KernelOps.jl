@@ -19,7 +19,7 @@ include("ka.jl")
 
 export AbstractKernelOp, AbstractKernel, KernelBinary, OutArray
 export register_kernel!, add_variant!, use_kernel!, current_kernel, list_kernels
-export with_kernel, reset_kernel!, set_default_kernel!, clear_default_kernel!
+export with_kernel, reset_kernel!, set_default_kernel!, clear_default_kernel!, selected_kernel
 export call_binary, ka_compile, backend_of
 
 public opname, default_kernel, @default_kernel, default_candidates, kernelname, host, forward, backward, 
