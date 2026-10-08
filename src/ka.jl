@@ -66,16 +66,17 @@ kernels live — but it is kept between sessions, so a `name` already built is f
 ka_binary_cache_dir() = joinpath(cache_root(), "ka")
 
 """
-    ka_compile(backend, kernel, argtypes::Tuple; tg, name, params=(;), dir=ka_binary_cache_dir()) -> KernelBinary
+    ka_compile(backend, kernel, argtypes::Tuple; tg, name, params=(;), tile=(tg, 1, 1), dir=ka_binary_cache_dir()) -> KernelBinary
 
 Ahead-of-time compile the KernelAbstractions `kernel` at workgroup size `tg` to a binary at
 `joinpath(dir, name * ext)` whose entry point is `name`, and return it as a [`KernelBinary`](@ref) with
-`ka=true` (and the given tuning `params`), ready for [`add_variant!`](@ref). Rebuilt only when absent —
-put a source hash in `name`.
+`is_ka=true` (and the given tuning `params`), ready for [`add_variant!`](@ref). Rebuilt only when absent —
+put a source hash in `name`. `tile` defaults to one item per thread; a kernel whose threads each cover
+several items says so here.
 
 This is the KernelAbstractions producer of binaries and it belongs to the launch side: the binary is 
 built against the launch context ([`ka_context`](@ref)) and argument pointer types that `call_binary` 
-binds for a `ka` binary, so compiling by other means binds wrongly, silently. `dir` is where the 
+binds for an `is_ka` binary, so compiling by other means binds wrongly, silently. `dir` is where the 
 file is built, by default [`ka_binary_cache_dir`](@ref): not part of the registry, which is where kernels 
 live. [`add_variant!`](@ref) copies what it registers into it.
 
@@ -88,10 +89,11 @@ function ka_compile(be::KernelBackend, kernel, argtypes::Tuple;
     tg::Integer,
     name::AbstractString,
     params::NamedTuple=NamedTuple(),
+    tile=(tg, 1, 1),
     dir::AbstractString=ka_binary_cache_dir()
 )
     path = _ka_compile(be, kernel, argtypes, Int(tg), String(name), String(dir))
-    return KernelBinary(path; threadgroup=tg, params, ka=true)
+    return KernelBinary(path; threadgroup=tg, tile, params, is_ka=true)
 end
 
 function _ka_compile end

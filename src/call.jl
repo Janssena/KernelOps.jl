@@ -42,18 +42,22 @@ function (op::AbstractKernelOp)(args...)
 end
 
 """
-    call_binary(op, kernel, name, args...; key=variant_key(op, kernel, args...)) -> Tuple
+    call_binary(op, kernel, name, args...; key=variant_key(op, kernel, args...), extent) -> Tuple
 
 Launch binary `name` of the variant for `key`, binding `(args..., extras(op, kernel, binary)...)`
 IN THE ORDER GIVEN: an [`OutArray`](@ref) is allocated (or a traced result), an array is bound in place,
-a number by value, a `Val` not at all. The grid is [`grid`](@ref)`(op, kernel, binary, args...)`.
-Returns the outputs, in `OutArray` order. Getting the order right is the caller's job.
+a number by value, a `Val` not at all. Returns the outputs, in `OutArray` order. Getting the order
+right is the caller's job.
+
+It launches `cld.(extent, tile)` threadgroups: the problem size `extent` (an integer or a tuple of up to
+three axes, required) divided by what one threadgroup of the binary covers, its `tile`.
 
 The outputs are picked from `args` alone: `extras` (which may read `KernelBinary.params`, typed only
 at run time) are only bound, so whatever they return never reaches the result's type. They must
 therefore not contain `OutArray`s.
 """
-function call_binary(op::AbstractKernelOp, k::AbstractKernel, name::Symbol, args...; key::Tuple=variant_key(op, k, args...))
+function call_binary(op::AbstractKernelOp, k::AbstractKernel, name::Symbol, args...;
+        key::Tuple=variant_key(op, k, args...), extent=nothing)
     v = variant(op, k, key)
     b = get(v, name) do
         throw(
@@ -63,7 +67,7 @@ function call_binary(op::AbstractKernelOp, k::AbstractKernel, name::Symbol, args
             )
         )
     end
-    g = NTuple{3,Int}(grid(op, k, b, args...))
+    g = _launch_grid(op, k, b, extent)
     proto = _first_array(args)
     be = backend_of(proto)
     prelude = Any[]
@@ -78,6 +82,14 @@ function call_binary(op::AbstractKernelOp, k::AbstractKernel, name::Symbol, args
 
     return bind_launch(proto, b.file, b.entry, b.threadgroup, prelude, map(_make_dense, args),
         map(_make_dense, extras(op, k, b)), g, name)
+end
+
+# The threadgroups to launch (see `call_binary`).
+function _launch_grid(op, k, b::KernelBinary, extent)
+    isnothing(extent) && throw(ArgumentError(
+        "no launch size for kernel `:$(kernelname(k))` of op `:$(opname(op))`: pass `extent=` (the " *
+        "problem size, divided by the binary's `tile`) to `call_binary`"))
+    return cld.(_pad3(extent), b.tile)
 end
 
 """

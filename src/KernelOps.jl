@@ -19,11 +19,11 @@ include("ka.jl")
 
 export AbstractKernelOp, AbstractKernel, KernelBinary, OutArray
 export register_kernel!, add_variant!, use_kernel!, current_kernel, list_kernels
-export with_kernel, reset_kernel!, set_default_kernel!, clear_default_kernel!, selected_kernel
+export reset_kernel!, set_default_kernel!, clear_default_kernel!, selected_kernel
 export call_binary, ka_compile, backend_of
 
 public opname, default_kernel, @default_kernel, default_candidates, kernelname, host, forward, backward, 
-    variant_key, grid, extras, nearest, build!, source_tag, cache_dir, variants, variant, record_bindings, 
+    variant_key, extras, nearest, build!, source_tag, cache_dir, variants, variant, record_bindings, 
     bind_launch, KernelBackend, CPUBackend, MetalBackendTag, CUDABackendTag, ROCmBackendTag, UnknownBackend,
     GPUBackend, device_dense, realtype, traced_autodiff, KERNEL_IN_TRACED_AUTODIFF, tracing, cache_root, 
     ka_binary_cache_dir, device_available, launch_binary, custom_call, ka_context, ka_grid, ka_backend_object, 
