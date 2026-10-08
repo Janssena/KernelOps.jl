@@ -448,7 +448,9 @@ end for s in strs)
 
 Register the variant for `key`: one [`KernelBinary`](@ref) per launch name (`fwd=…, dq=…`). Each binary is
 COPIED into the kernel's cache directory (so it survives its original moving) and the manifest is
-rewritten.
+rewritten. The copy is named `<launch name>_<id>.<ext>`, `id` being the first 8 hex digits of a hash
+of the file's contents, `key` and the launch name: a different binary never takes a registered one's
+file. Binaries no variant names any more are removed.
 """
 function add_variant!(op::AbstractKernelOp, k::AbstractKernel, key::Tuple; binaries...)
     isempty(binaries) && throw(ArgumentError("a variant needs at least one binary"))
