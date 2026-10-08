@@ -139,7 +139,7 @@ No `register_kernel!` is needed first: KernelOps registers kernels on first use.
 `add_variant!` **copies** the file into the registry and writes a manifest:
 
 ```
-~/.cache/KernelOps/ops/SDPAOps.sdpa/metal/
+~/.cache/KernelOps/ops/SDPAOps.sdpa/flash/
 ├── fwd_14162b5b.metallib
 └── manifest.toml
 ```
@@ -178,7 +178,7 @@ Rather than registering in a setup script, `SDPAOps` builds a missing variant th
 needed. `call_binary` looks the key up, then tries your `nearest`, then calls your `build!`:
 
 ```julia
-const METALLIB = joinpath(@__DIR__, "kernels", "sdpa.metallib")
+const METALLIB = joinpath(@__DIR__, "..", "kernels", "sdpa.metallib")   # src/../kernels
 include_dependency(METALLIB)        # a new binary re-precompiles the package, and so its tag
 
 source_tag(::FlashAttn) = string(hash(read(METALLIB)); base=36)

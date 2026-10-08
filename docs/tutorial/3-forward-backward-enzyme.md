@@ -95,7 +95,7 @@ argument list below:
 ```julia
 add_variant!(SDPA(), FlashAttn(), (:Float32,); fwd=fwd_binary, bwd=bwd_binary)
 
-function backward(op::SDPA, kern::SDPAMetal, (q, k, v), o, dout)
+function backward(op::SDPA, kern::FlashAttn, (q, k, v), o, dout)
     d, n, m, dv = _sizes(q, k, v)
     dq, dk, dv_ = call_binary(op, kern, :bwd, q, k, v, o, dout,
         OutArray(Float32, d, n), OutArray(Float32, d, m), OutArray(Float32, dv, m),

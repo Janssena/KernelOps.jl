@@ -20,11 +20,11 @@ struct SDPA <: AbstractKernelOp end
 opname(::SDPA) = :sdpa                       # optional: a stable name (default = struct name, i.e. `:SDPA`)
 
 struct FlashAttn <: AbstractKernel end       # a prebuilt Metal binary
-struct Trifast <: AbstractKernel end         # a KernelAbstractions kernel, compiled to a binary
+struct SDPAKA <: AbstractKernel end          # a KernelAbstractions kernel, compiled to a binary
 kernelname(::FlashAttn) = :flash             # optional (default = struct name, i.e. `:FlashAttn`)
-kernelname(::Trifast) = :trifast
+kernelname(::SDPAKA) = :ka
 
-KernelOps.@default_kernel SDPA FlashAttn() Trifast()
+KernelOps.@default_kernel SDPA FlashAttn() SDPAKA()
 ```
 
 - `@default_kernel` lists the kernels that can be the op's **default**. The first, `FlashAttn()`, is the
@@ -50,17 +50,17 @@ julia> current_kernel(:sdpa)
 julia> o = SDPA()(q, k, v);                   # runs the `:flash` kernel for device arrays
 
 julia> list_kernels(:sdpa)
-2-element Vector{…}:
- (name = :trifast, nvariants = 0, selected = false)
- (name = :flash, nvariants = 1, selected = true)
+2-element Vector{@NamedTuple{name::Symbol, nvariants::Int64, selected::Bool}}:
+ (name = :flash, nvariants = 1, selected = 1)
+ (name = :ka, nvariants = 0, selected = 0)
 
-julia> use_kernel!(SDPA(), Trifast())  # by kernel; the op by instance, type or name…
-:trifast
+julia> use_kernel!(SDPA(), SDPAKA())          # by kernel; the op by instance, type or name…
+:ka
 
-julia> use_kernel!(:sdpa, :trifast)            # …or both by name, the REPL shorthand
-:trifast
+julia> use_kernel!(:sdpa, :ka)                # …or both by name, the REPL shorthand
+:ka
 
-julia> SDPA()(q, k, v)                        # now runs the `:trifast` kernel
+julia> SDPA()(q, k, v)                        # now runs the `:ka` kernel
 
 julia> reset_kernel!(:sdpa)                   # back to the default (FlashAttn())
 ```
@@ -80,8 +80,8 @@ To run one call with a particular kernel, inside a function or anywhere else, ca
 `forward` directly. Nothing is switched or recompiled, and the call is inferred:
 
 ```julia
-for kern in (FlashAttn(), Trifast())
-    o = forward(SDPA(), kern, q, k, v)          # a benchmark comparing kernels
+for kern in (FlashAttn(), SDPAKA())
+    o = KernelOps.forward(SDPA(), kern, q, k, v)    # a benchmark comparing kernels
 end
 ```
 
@@ -94,11 +94,11 @@ Switch at top level first, then build it, and rebuild it after switching.
 
 ## Persisting a default
 
-The session override is gone after a restart. To make `:trifast` the default from now on:
+The session override is gone after a restart. To make `:ka` the default from now on:
 
 ```julia
-julia> set_default_kernel!(:sdpa, :trifast)
-[ Info: Default kernel of op `:sdpa` set to `:trifast` in SDPAOps's preferences. It takes effect after a
+julia> set_default_kernel!(:sdpa, :ka)
+[ Info: Default kernel of op `:sdpa` set to `:ka` in SDPAOps's preferences. It takes effect after a
 restart (re-precompiling SDPAOps and its dependents); `use_kernel!` switches this session.
 ```
 
@@ -107,19 +107,19 @@ This writes a preference of the package that declares the op (`SDPAOps`) to the 
 
 ```toml
 [SDPAOps]
-"kernel.sdpa" = "trifast"
+"kernel.sdpa" = "ka"
 ```
 
-In the next session `SDPAOps` re-precompiles once, with `:trifast` baked in as the default:
+In the next session `SDPAOps` re-precompiles once, with `:ka` baked in as the default:
 
 ```julia
 julia> using SDPAOps, KernelOps        # precompiles SDPAOps
 
 julia> current_kernel(:sdpa)
-:trifast
+:ka
 
 julia> KernelOps.default_kernel(SDPA())
-Trifast()
+SDPAKA()
 ```
 
 `clear_default_kernel!(:sdpa)` removes the preference, and the first candidate is the default again
@@ -127,7 +127,7 @@ from the next session. A name that isn't one of the `@default_kernel` candidates
 
 ```
 julia> set_default_kernel!(:sdpa, :nope)
-ERROR: ArgumentError: kernel `:nope` is not a default candidate of op `:sdpa`. Candidates: :trifast, :flash
+ERROR: ArgumentError: kernel `:nope` is not a default candidate of op `:sdpa`. Candidates: :flash, :ka
 (listed in its `KernelOps.@default_kernel`)
 ```
 
@@ -163,5 +163,5 @@ switches it for every caller, including libraries that were tested with another 
 - **A library never switches.** It can't anyway: `use_kernel!` refuses to run while precompiling,
   which includes a package's top level and its `__init__` while dependents precompile.
 - **A library that needs one particular kernel calls it directly**, past the selection:
-  `forward(SDPA(), FlashAttn(), q, k, v)`. Normally a library shouldn't care: all of an op's kernels
+  `KernelOps.forward(SDPA(), FlashAttn(), q, k, v)`. Normally a library shouldn't care: all of an op's kernels
   compute the same thing, and which one runs is the application's performance decision.
