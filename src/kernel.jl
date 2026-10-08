@@ -40,17 +40,17 @@ struct KernelBinary
     entry::String
     threadgroup::Int
     params::NamedTuple
-    ka::Bool
+    is_ka::Bool
     # Fields of `params` kept sorted, so a binary compares equal to itself after a manifest round-trip.
-    KernelBinary(file, entry, threadgroup, params::NamedTuple, ka::Bool) =
-        new(String(file), String(entry), Int(threadgroup), _sorted(params), ka)
+    KernelBinary(file, entry, threadgroup, params::NamedTuple, is_ka::Bool) =
+        new(String(file), String(entry), Int(threadgroup), _sorted(params), is_ka)
 end
 
 KernelBinary(file::AbstractString;
     entry::AbstractString=splitext(basename(file))[1],
     threadgroup::Integer,
     params::NamedTuple=NamedTuple(),
-    ka::Bool=false) = KernelBinary(file, entry, threadgroup, params, ka)
+    is_ka::Bool=false) = KernelBinary(file, entry, threadgroup, params, is_ka)
 
 _sorted(nt::NamedTuple) = NamedTuple{Tuple(sort(collect(keys(nt))))}(nt)
 
@@ -379,7 +379,7 @@ function add_variant!(op::AbstractKernelOp, k::AbstractKernel, key::Tuple; binar
         id = first(string(hash(read(b.file), hash((key, name))); base=16, pad=16), 8)
         dst = joinpath(dir, "$(name)_$(id)$(lowercase(splitext(b.file)[2]))")
         abspath(b.file) == abspath(dst) || cp(b.file, dst; force=true)
-        v[name] = KernelBinary(dst, b.entry, b.threadgroup, b.params, b.ka)
+        v[name] = KernelBinary(dst, b.entry, b.threadgroup, b.params, b.is_ka)
     end
     variants(op, k)[key] = v
     save_manifest(op, k)
@@ -391,7 +391,7 @@ function save_manifest(op, k)
     tbl = Dict{String,Any}("source_tag" => source_tag(k), "variant" => [
         Dict{String,Any}("key" => _key_str(key), "binary" => [
             Dict{String,Any}("name" => String(n), "file" => basename(b.file), "entry" => b.entry,
-                "threadgroup" => b.threadgroup, "ka" => b.ka, "params" => Dict(String(p) => x for (p, x) in pairs(b.params)))
+                "threadgroup" => b.threadgroup, "is_ka" => b.is_ka, "params" => Dict(String(p) => x for (p, x) in pairs(b.params)))
             for (n, b) in sort(collect(v); by=first)])
         for (key, v) in sort(collect(vs); by=string ∘ first)])
     open(io -> TOML.print(io, tbl), manifest_path(op, k), "w")
@@ -418,7 +418,7 @@ function load_manifest(op, k)
                 file = joinpath(dir, bd["file"])
                 isfile(file) || (v = nothing; break)
                 v[Symbol(bd["name"])] = KernelBinary(file, bd["entry"], bd["threadgroup"],
-                    NamedTuple(Symbol(p) => x for (p, x) in bd["params"]), get(bd, "ka", false))
+                    NamedTuple(Symbol(p) => x for (p, x) in bd["params"]), get(bd, "is_ka", false))
             end
             isnothing(v) || (out[_key_parse(vd["key"])] = v)
         end

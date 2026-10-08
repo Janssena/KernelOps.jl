@@ -67,7 +67,7 @@ function call_binary(op::AbstractKernelOp, k::AbstractKernel, name::Symbol, args
     proto = _first_array(args)
     be = backend_of(proto)
     prelude = Any[]
-    if b.ka
+    if b.is_ka
         # A KA-compiled binary: KA's context (built by KA from this grid) ahead of the arguments, and the
         # backend's own dispatch grid.
         ctx, ghost = ka_context(be, g, b.threadgroup)
