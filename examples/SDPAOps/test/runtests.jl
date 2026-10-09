@@ -15,7 +15,7 @@ ref = SDPA()(q, k, v)                                    # host arrays: the host
     # One call with a particular kernel: its `forward`, no switch.
     @test Array(KernelOps.forward(SDPA(), SDPAOps.SDPAKA(), qd, kd, vd)) ≈ ref
     @test current_kernel(SDPA()) === :flash               # nothing switched
-    rec(kern) = map(first, last(only(KernelOps.record_bindings(() -> KernelOps.forward(SDPA(), kern, qd, kd, vd)))))
+    rec(kern) = map(first, only(KernelOps.record_bindings(() -> KernelOps.forward(SDPA(), kern, qd, kd, vd))).slots)
     @test rec(SDPAOps.FlashAttn()) == (:in, :in, :in, :out, :scalar, :scalar, :scalar, :scalar, :scalar)
     # A KA binary takes the state word and KA's context first.
     @test rec(SDPAOps.SDPAKA()) == (:bytes, :bytes, :out, :in, :in, :in, :scalar, :scalar, :scalar, :scalar, :scalar)
