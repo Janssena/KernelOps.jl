@@ -129,7 +129,18 @@ function compile_metallib(kernel, sig::Type, tg::Integer, entry::AbstractString)
     obj = kernel(MetalBackend(), Int(tg))
     job = GPUCompiler.CompilerJob(GPUCompiler.methodinstance(typeof(obj.f), sig),
         Metal.compiler_config(Metal.device(); name=String(entry), kernel=true))
-    return Metal.compile(job).metallib
+    return _metallib(job)
+end
+
+# Metal 1.10 exposes `Metal.compile(job)`; 1.11 (GPUCompiler 2) renamed it `compile_to_metallib` and
+# its result may carry `relocations`, a table resolved at launch time that a bare `.metallib` has no
+# way to supply (it only arises for kernels referencing interned symbols / boxed constants).
+function _metallib(job)
+    res = isdefined(Metal, :compile_to_metallib) ? Metal.compile_to_metallib(job) : Metal.compile(job)
+    isnothing(get(res, :relocations, nothing)) || error(
+        "kernel needs launch-time relocations (interned symbols or boxed constants), which an " *
+        "ahead-of-time `.metallib` cannot carry; remove non-isbits constants from the kernel")
+    return res.metallib
 end
 
 _ka_argtype(::Type{A}) where {A<:AbstractArray} = dptr(eltype(A))
