@@ -1,146 +1,140 @@
 # KernelOps.jl
 
-Run an operation as compiled kernels:
-- eagerly on device arrays (`MtlArray`);
-- **embedded in a Reactant-compiled program** as a `stablehlo.custom_call`;
-- or as plain Julia on the host.
+Simplify working with compiled kernel binaries built anywhere, directly in Julia!
+- Define an op
+- Register kernels for it
+- Select default kernel and run the op on CPU and device arrays simply through multiple dispatch!
+- Kernels can even run embedded in a Reactant-compiled program as a stablehlo.custom_call!
 
-Each operation can have several **kernels** (implementations) that you switch between at runtime,
-and each kernel has **tuned variants** picked from the inputs.
+An operation can have several **kernels** (implementations) you switch between at runtime, each with
+**tuned variants** picked from the inputs. Pure-Julia [KernelAbstractions](https://github.com/JuliaGPU/KernelAbstractions.jl) 
+kernels are also supported as one more source of binaries: `ka_compile` turns one into a binary, and 
+from there it is launched like any other. 
 
-KernelOps does not interpret your arguments. You hand a binary its arguments in the order it takes
-them, with outputs marked `OutArray(T, dims...)`, and get the outputs back. Everything else (reshapes,
-transposes, scalars) is ordinary Julia in your `forward` method.
-
-Backends today: Metal, eager, and traced through the jax-mps PJRT plugin.
-[LuxTriangleAttention.jl](../LuxTriangleAttention.jl) runs all its attention kernels this way: a
-KernelAbstractions flash kernel, a matrix-unit variant, and trifast's Triton metallibs.
+**Tutorials** in [`docs/`](docs/README.md) walk through a complete example: switching kernels
+and persisting defaults, registering a compiled binary or a KA kernel, custom `forward`/`backward` with
+Enzyme gradients, and compiling a Triton kernel to a `.metallib`.
 
 ## Concepts
 
 | | what | you write |
 |:--|:--|:--|
-| **op** | an operation: `struct Axpy <: AbstractKernelOp end` | `opname`, `host`, and usually `forward`/`backward` methods |
-| **kernel** | one implementation of it, switchable by name: `struct AxpyKA <: AbstractKernel end` | `kernelname`, `grid`, and optionally `variant_key`, `extras`, `nearest`, `build!`, `source_tag` |
-| **variant** | one tuned build of a kernel for a class of inputs: launch name → `KernelBinary` | `add_variant!` (persisted to a short TOML manifest) |
-| **`KernelBinary`** | one compiled launch: file, entry point, threadgroup, tuning `params` | — |
+| **op** | an operation: `SDPA <: AbstractKernelOp` | `host`, `@default_kernel` |
+| **kernel** | one implementation: `Trifast <: AbstractKernel` | `forward` (builds the binary's arguments), optionally `backward`, `variant_key`, `extras`, `nearest`, `build!`, `source_tag` |
+| **variant** | one (tuned) build of a kernel for a class of inputs: launch name → `KernelBinary` | `add_variant!` |
+| **`KernelBinary`** | one compiled launch: file, entry point, `threadgroup`, `tile`, tuning `params`, `is_ka` | — |
 
-Ops and kernels are fieldless singletons, so their behaviour comes from dispatch. Which kernels an
-op has and which variants exist are kept in KernelOps' tables, by name. Which kernel is *selected* is
-a method, so an op call is type-stable (see [Selecting kernels](#selecting-kernels)).
+Ops and kernels are fieldless singletons; behaviour comes from dispatch. Which kernel is *selected* is
+a method, so an op call is type-stable.
 
 ## Example
 
-```julia
-using KernelOps, KernelAbstractions, Metal
-import KernelOps: opname, kernelname, host, forward, backward, grid, variant_key, OutArray
+Registering a single kernel for a scaled dot-product attention operation (`q: d×n`, `k: d×m`, `v: dv×m` → `o: dv×n`):
 
-@kernel unsafe_indices = true function axpy_fwd!(z, x, y, a::Float32, n::Int32, ::Val{TG}) where {TG}
-    i = (@index(Group, Linear) - 1) * TG + @index(Local, Linear)
-    i <= n && unsafe_store!(z, a * unsafe_load(x, i) + unsafe_load(y, i), i)
+```julia
+import KernelOps: host, forward
+
+using KernelOps
+
+# Define your operation
+struct SDPA <: AbstractKernelOp end
+
+# CPU default:
+softmax(s) = (p = exp.(s .- maximum(s; dims=1)); p ./ sum(p; dims=1))
+host(::SDPA, q, k, v) = v * softmax((k' * q) ./ sqrt(Float32(size(q, 1))))
+
+# Define our kernel:
+struct FlashAttn <: AbstractKernel end
+
+# For package developers
+KernelOps.@default_kernel SDPA FlashAttn()
+
+add_variant!(
+  SDPA(), FlashAttn(); fwd = KernelBinary("flash.metallib"; threadgroup=64)
+)
+
+# Every kernel needs a `forward`: it builds the binary's arguments from the op's and launches it.
+function forward(op::SDPA, kernel::FlashAttn, q, k, v)
+    (d, n), m, dv = Int32.(size(q)), Int32(size(k, 2)), Int32(size(v, 1))
+    o = OutArray(Float32, dv, n) # Provide the shapes of the output
+    scale = inv(sqrt(Float32(d)))
+    # `extent`: the problem size (one query each); KernelOps divides it by the binary's `tile`.
+    # :fwd should match the kwarg that is used in add_variant!
+    result = call_binary(op, kernel, :fwd, q, k, v, o, n, m, d, dv, scale; extent=n) # Returns a Tuple
+    return only(result)                                       # of the OutArrays: here, just `o`
+end
+```
+
+Calling the op picks the path from its arguments, and switching kernels is one line:
+
+```julia
+q, k, v = (randn(Float32, 16, 100), randn(Float32, 16, 70), randn(Float32, 8, 70)) .|> MtlArray
+
+o = SDPA()(q, k, v)                                       # MtlArray: the default kernel, FlashAttn
+SDPA()(Array(q), Array(k), Array(v))                      # Array: `host` · traced (jax-mps): a custom call
+use_kernel!(SDPA(), SDPAKA())                             # this session, from the next top-level statement
+SDPA()(q, k, v)                                           # runs the KA kernel (defined below)
+forward(SDPA(), FlashAttn(), q, k, v)                     # one call with a given kernel: no global switch
+```
+
+## KernelAbstractions kernels
+
+A KernelAbstractions kernel is just one more source of binaries. Written against the same argument list,
+it joins the op as another kernel: its own `forward`, and a binary from `ka_compile` instead of a file:
+
+```julia
+using KernelAbstractions
+import KernelOps: extras
+
+@kernel unsafe_indices = true function sdpa_ka!(q, k, v, o, n::Int32, m::Int32, d::Int32, dv::Int32,
+        scale::Float32, ::Val{TG}) where {TG}
+    i = (@index(Group, Linear) - 1) * TG + @index(Local, Linear)   # this thread's query
+    if i <= n
+        # … softmax(k[:, j]' q[:, i] * scale) over j, weighting v into o[:, i], through
+        #   unsafe_load / unsafe_store! (see docs/examples/SDPAOps for a full kernel)
+    end
 end
 
-struct Axpy <: AbstractKernelOp end
-struct AxpyKA <: AbstractKernel end
-opname(::Axpy) = :axpy
-kernelname(::AxpyKA) = :ka
-host(::Axpy, x, y, a) = a .* x .+ y                    # host arrays
-variant_key(::Axpy, ::AxpyKA, args...) = (nameof(eltype(KernelOps._first_array(args))),)
-grid(::Axpy, ::AxpyKA, b::KernelBinary, args...) =           # threadgroups; `params` hold tuning numbers
-    (cld(length(KernelOps._first_array(args)), b.params.tg), 1, 1)
+struct SDPAKA <: AbstractKernel end
+extras(::SDPA, ::SDPAKA, b::KernelBinary) = (Val(b.threadgroup),)  # the compiled-in tile size: no slot
 
-# The binary's arguments, in its order; outputs come back in `OutArray` order.
-forward(op::Axpy, k::AxpyKA, x, y, a) =
-    only(call_binary(op, k, :fwd, OutArray(eltype(x), length(x)), x, y, Float32(a), Int32(length(x))))
+function forward(op::SDPA, kernel::SDPAKA, q, k, v)               # same argument order as FlashAttn's
+    (d, n), m, dv = Int32.(size(q)), Int32(size(k, 2)), Int32(size(v, 1))
+    o = OutArray(Float32, dv, n)
+    result = call_binary(op, kernel, :fwd, q, k, v, o, n, m, d, dv, inv(sqrt(Float32(d))); extent=n)
+    return only(result)
+end
 
-fwd = ka_compile(KernelOps.MetalBackendTag(), axpy_fwd!,       # a KernelBinary with `ka=true`
-    (Vector{Float32}, Vector{Float32}, Vector{Float32}, Float32, Int32, Val{64});
-    tg=64, name="axpy_fwd", params=(; tg=64))
-KernelOps.@default_kernel Axpy AxpyKA()               # the default (more candidates may follow)
-register_kernel!(Axpy(), AxpyKA())                     # in a package: in `__init__`
-add_variant!(Axpy(), AxpyKA(), (:Float32,); fwd)
+argtypes = (
+  Vector{Float32}, Vector{Float32}, Vector{Float32}, Vector{Float32}, 
+  Int32, Int32, Int32, Int32, Float32, Val{64}
+)
 
-Axpy()(x, y, 2f0)       # Array: host · MtlArray: the kernel · traced (jax-mps): a custom call
+fwd = ka_compile(KernelOps.MetalBackendTag(), sdpa_ka!, argtypes; tg=64, name="sdpa_ka_v1")
+add_variant!(SDPA(), SDPAKA(); fwd)
+use_kernel!(SDPA(), SDPAKA())
 ```
 
-Variants are persisted (the binaries are copied into the cache), so they survive a restart.
-
-## Selecting kernels
-
-The kernel an op runs is a method, not a table entry: a constant to the compiler, so
-`Axpy()(x, y, a)` and every function calling it infer. It comes in two layers:
-
-| | set with | takes effect | cost |
-|:--|:--|:--|:--|
-| **default** | `@default_kernel Op k₁ k₂ …` in the op's package, `set_default_kernel!(op, name)` | next session | the package and its dependents re-precompile once |
-| **session override** | `use_kernel!(op, name)`, undone by `reset_kernel!(op)` | next top-level statement | code calling the op recompiles on its next call |
-
-Tuned variants are plain values: tuning never recompiles anything. A typical session:
-
-```julia
-using BioFold                            # precompiled with the default kernel
-use_kernel!(:attention, :flash)          # try another kernel, this session only
-tune!(...)                               # variants go to the manifest
-model(x)                                 # runs :flash, inferred
-set_default_kernel!(:attention, :flash)  # persist: next session precompiles with :flash
-```
-
-- **The default** is `k₁`, unless the preference `"kernel.<opname>"` of the package declaring the op
-  names another candidate. `set_default_kernel!` writes that preference to the active project's
-  `LocalPreferences.toml`; `clear_default_kernel!` removes it. Outside a package (a script) there
-  are no preferences and the default is `k₁`.
-- **World age.** `use_kernel!` redefines a method, which Julia makes visible from the next top-level
-  expression (REPL input, script statement). Switching and calling the op later in the *same*
-  function or `begin`/`let` block throws rather than silently run the previous kernel. To switch
-  inside a function (a benchmark over kernels), use `with_kernel(() -> model(x), :attention, :flash)`.
-- **Precompilation.** Kernel tables are filled at run time: register kernels in your package's
-  `__init__`. `use_kernel!` refuses to run while precompiling; the default is what precompiles.
-- **Reactant.** A compiled thunk (`@compile`) holds the kernel selected when it was traced;
-  re-`@compile` after switching.
-
-## Calling and overloading
-
-```julia
-(op::AbstractKernelOp)(args...)        # host arrays → host(op, args...); device → forward(op, args...)
-forward(op, args...)                   # = forward(op, selected kernel, args...)
-forward(op, kernel, args...)           # default: call_binary(op, kernel, :fwd, args...); overload it
-backward(op, kernel, args, outs, cots) # gradients aligned with args; overload to differentiate
-call_binary(op, kernel, name, args...; key=variant_key(op, kernel, args...))
-```
-
-`call_binary` finds the variant for `key`: an exact match, else your `nearest`, else your `build!`
-(a lazy tune). It then binds `(args..., extras(op, kernel, binary)...)` in the order given:
-- an `OutArray` is allocated eagerly, or becomes a result in a trace;
-- an array is bound in place;
-- a number is bound by value;
-- a `Val` takes no slot.
-
-It launches on `grid(op, kernel, binary, args...)` threadgroups and returns the outputs. For an
-binary compiled with `ka_compile` (`KernelBinary.ka`), KA's launch context is built for you and the launch is dispatched flat. The result
-type is inferred from the `OutArray`s alone, whatever your `grid` and `extras` read from `params`.
+- `ka_compile(backend, kernel, argtypes; tg, name, params, tile)` returns a `KernelBinary` with
+  `is_ka=true` and, unless given, `tile=(tg, 1, 1)`: one item per thread, as `sdpa_ka!` indexes. It
+  builds into `ka_binary_cache_dir()` (`<cache_root>/ka`) and finds it there next time, so put a
+  source hash in `name`. Its `argtypes` are the arguments after KA's context: `Vector{T}` for a
+  buffer (a raw device pointer, indexed with `unsafe_load`/`unsafe_store!`), a bits type, `Val{x}`.
+- `is_ka=true` tells `call_binary` to bind KA's launch context and the backend's state word ahead of the
+  arguments, and to dispatch flat. Compile KA kernels with `ka_compile` so the binary matches. It is a
+  property of the binary, so one kernel type can hold a KA `fwd` and a Triton `bwd`.
+- A KA kernel is just another source of binaries: switching between a KA, a Metal and a Triton kernel
+  never changes the op. To make it a persistable default, list it in `@default_kernel` (after its type
+  is defined).
+- **Not for tracing KA kernels.** Under Reactant the program only *names* the compiled file, so XLA
+  never sees the kernel's code. To have Reactant trace a KA kernel itself, run Reactant over the
+  `@kernel` function instead of running through KernelOps. The ability to optionally trace kernels is 
+  planned functionality (but is currently only supported through CUDA in Reactant).
 
 ## AD
 
-- **Eager Enzyme:** one rule covers every op. It fires on the device call and runs your `backward`,
-  so Enzyme never enters your `forward`'s plain Julia or the binary.
+- **Eager Enzyme:** one rule on `forward(op, kernel, args...)` covers every op and runs your
+  `backward`, so Enzyme never enters your `forward` or the binary.
 - **Under Reactant:** call `backward` directly. A gradient traced *through* a kernel throws, because
-  Enzyme-JAX cannot differentiate a custom call yet (EnzymeAD/Enzyme#2516). Set
+  Enzyme-JAX cannot differentiate a custom call yet (EnzymeAD/Enzyme#2516); set
   `KernelOps.KERNEL_IN_TRACED_AUTODIFF[] = true` once it can.
-
-## Also
-
-- `ka_compile(backend, kernel, argtypes; tg, name)`: compile a KernelAbstractions kernel to a binary
-  (built in `ka_binary_cache_dir()`, `<cache_root>/ka`, and found there next time), then register it with `add_variant!` like any other binary (see the
-  example). It is the KA producer of binaries, the counterpart of a Triton compile script: it builds
-  against the launch context that `ka` binaries are bound with, so compile KA kernels with it. It returns a `KernelBinary` with `ka=true`, which tells `call_binary` to bind that context; a Triton binary leaves it `false`. A KA
-  kernel is then just another source of binaries: an op keeps one kernel type per implementation
-  (`AxpyKA`, `AxpyTriton`, …), each registering its own binaries, and switching between them never
-  changes the op. Registered binaries live in the registry (`cache_dir(op)/<kernelname>/`), copied from
-  wherever they were built.
-- **Not for tracing KA kernels.** The binary is compiled ahead of time, and under Reactant the program
-  holds a `stablehlo.custom_call` that only *names* the file, so XLA never sees the kernel's code. To
-  have Reactant trace a KA kernel itself (fusable, differentiable), run Reactant over the `@kernel`
-  function directly and leave this package out of it.
-- `KernelOps.record_bindings(f)`: runs `f` with every launch replaced by a record of exactly what
-  would be bound. Useful for pinning a binary's argument list in a test, as LuxTriangleAttention's
-  golden-ABI test does.
