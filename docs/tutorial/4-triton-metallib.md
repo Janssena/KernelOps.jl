@@ -206,7 +206,7 @@ Then check the bindings against the Triton signature, and the output against the
 ```julia
 julia> use_kernel!(:sdpa, :triton)
 
-julia> map(first, last(only(KernelOps.record_bindings(() -> SDPA()(q, k, v)))))
+julia> map(first, only(KernelOps.record_bindings(() -> SDPA()(q, k, v))).slots)
 (:in, :in, :in, :out, :scalar, :scalar, :scalar, :scalar, :scalar)   # q k v o N M D DV scale
 
 julia> Array(SDPA()(q, k, v)) ≈ SDPA()(Array(q), Array(k), Array(v))
