@@ -1,7 +1,7 @@
 module KernelOpsMetalExt
 
 # Metal's half of KernelOps: binding arguments to a compiled `.metallib` and dispatching it (the eager
-# `bind_launch` every `call_binary` ends in), and ahead-of-time compilation of
+# `execute` every `call_binary` / `run_binary` ends in), and ahead-of-time compilation of
 # KernelAbstractions kernels.
 
 import Metal: AS, GPUCompiler, LinearAlgebra
@@ -38,25 +38,23 @@ arg_buffer(a) = get!(_ARG_BUFFERS, (typeof(a), a)) do
     MtlArray([a])
 end
 
-"""
-    max_threads(path, entry) -> Int
+# The compiled pipeline's own threadgroup ceiling: what a kernel's register use leaves of the
+# device's. Dispatching over it returns garbage AND a fast time, so launches refuse it.
+pipeline_limit(path, entry) = Int(pipeline(path, entry).maxTotalThreadsPerThreadgroup)
 
-The compiled pipeline's own threadgroup ceiling — what a kernel's register use leaves of the
-device's. Dispatching over it returns garbage AND a fast time, so `launch_binary` refuses it.
-"""
-max_threads(path, entry) = Int(pipeline(path, entry).maxTotalThreadsPerThreadgroup)
+KO.max_threads(::KO.MetalBackendTag, b::KO.KernelBinary) = pipeline_limit(b.file, b.entry)
 
-function KO.launch_binary(::KO.MetalBackendTag, path, entry, args, grid::NTuple{3,Int}, tg::Integer)
-    pipe = pipeline(path, entry)
-    tg <= Int(pipe.maxTotalThreadsPerThreadgroup) || throw(ArgumentError(
-        "threadgroup $tg exceeds this pipeline's limit of $(pipe.maxTotalThreadsPerThreadgroup); " *
-        "dispatching over it returns garbage AND a fast time"))
-    # Metal.jl batches its own commands (fills, copies, argument-buffer uploads) on ITS queue; this
-    # launch commits to another. Without draining Metal.jl first the kernel can run before they land.
-    Metal.synchronize()
-    cb = Metal.MTLCommandBuffer(queue())
-    enc = Metal.MTLComputeCommandEncoder(cb)
-    Metal.set_function!(enc, pipe)
+function _check_limit(path, entry, tg)
+    lim = pipeline_limit(path, entry)
+    tg <= lim || throw(ArgumentError(
+        "threadgroup $tg exceeds this pipeline's limit of $lim; " *
+        "dispatching over it returns garbage AND a fast time"
+    ))
+    return nothing
+end
+
+# Bind `args` (in slot order) to the encoder's buffer slots.
+function _set_slots!(enc, args)
     for (i, a) in enumerate(args)
         if a isa MtlArray
             Metal.set_buffer!(enc, a.data[], a.offset, i)   # 1-based, despite Metal's 0-based convention
@@ -64,41 +62,59 @@ function KO.launch_binary(::KO.MetalBackendTag, path, entry, args, grid::NTuple{
             Metal.set_buffer!(enc, arg_buffer(a).data[], 0, i)
         end
     end
-    Metal.dispatchThreadgroups!(enc, Metal.MTLSize(grid...), Metal.MTLSize(Int(tg), 1, 1))
-    Metal.endEncoding!(enc)
-    Metal.commit!(cb)
-    Metal.wait_completed(cb)
+
     return nothing
 end
 
-KO.launch_binary(be::KO.MetalBackendTag, path, entry, args, ngroups::Integer, tg::Integer) =
-    KO.launch_binary(be, path, entry, args, (Int(ngroups), 1, 1), tg)
-
-# --- the eager binder -----------------------------------------------------------------------------
-
-_alloc(o::KO.OutArray{T}) where {T} = o.zero ? Metal.zeros(T, o.dims...) : MtlArray{T}(undef, o.dims...)
-
-"""
-    bind_launch(::AbstractArray, path, entry, tg, prelude, args, extras, grid, label) -> Tuple
-
-Allocate every `OutArray` of `args`, bind `(prelude..., args..., extras...)` in order (a `Val` takes no
-slot), dispatch, and return the allocated outputs. Dispatches on `AbstractArray`: the Reactant extension's method, on
-traced arrays, is more specific.
-"""
-function KO.bind_launch(::AbstractArray, path, entry, tg, prelude, args, extras, grid, label)
-    bound = map(a -> a isa KO.OutArray ? _alloc(a) : a, args)
-    slots = Any[prelude...]
-    for a in (bound..., extras...)
-        a isa Val || push!(slots, a)
+# Encode `reps` dispatches of `entry` over `grid` into one command buffer, commit and wait for it.
+function _run(path, entry, args, grid::NTuple{3,Int}, tg::Integer, reps::Int)
+    _check_limit(path, entry, tg)
+    # Metal.jl batches its own commands (fills, copies, argument-buffer uploads) on ITS queue; this
+    # launch commits to another. Without draining Metal.jl first the kernel can run before they land.
+    Metal.synchronize()
+    cb = Metal.MTLCommandBuffer(queue())
+    enc = Metal.MTLComputeCommandEncoder(cb)
+    Metal.set_function!(enc, pipeline(path, entry))
+    _set_slots!(enc, args)
+    for _ in 1:reps
+        Metal.dispatchThreadgroups!(enc, Metal.MTLSize(grid...), Metal.MTLSize(Int(tg), 1, 1))
     end
+    Metal.endEncoding!(enc)
+    Metal.commit!(cb)
+    Metal.wait_completed(cb)
+    
+    return cb
+end
+
+KO.encode_launch(::KO.MetalBackendTag, b::KO.KernelBinary, slots, grid::NTuple{3,Int}) =
+    (_run(b.file, b.entry, slots, grid, b.threadgroup, 1); nothing)
+
+# The `reps` dispatches share one command buffer: its GPU timestamps exclude all host latency.
+function KO.device_time(::KO.MetalBackendTag, b::KO.KernelBinary, slots, grid::NTuple{3,Int}; reps::Int)
+    reps >= 1 || throw(ArgumentError("`reps` must be at least 1, got $reps"))
+    cb = _run(b.file, b.entry, slots, grid, b.threadgroup, reps)
+    return (cb.GPUEndTime - cb.GPUStartTime) / reps
+end
+
+# --- the eager executor ---------------------------------------------------------------------------
+
+"""
+    execute(proto::AbstractArray, l::Launch) -> Tuple
+
+Allocate every `OutArray` of the launch's arguments, bind `(prelude..., args..., extras...)` in order
+(a `Val` takes no slot), dispatch, and return the allocated outputs. Dispatches on `AbstractArray`:
+the Reactant extension's method, on traced arrays, is more specific.
+"""
+function KO.execute(proto::AbstractArray, l::KO.Launch)
+    bound, slots = KO.bind_slots(proto, l.prelude, l.args, l.extras)
     if KO.recording()
-        KO.record!(label, Any[(:bytes => p for p in prelude)...,
+        KO.record!(l, Any[(:bytes => p for p in l.prelude)...,
             (a isa KO.OutArray ? (:out => b) : b isa AbstractArray ? (:in => b) : (:scalar => b)
-             for (a, b) in zip((args..., extras...), (bound..., extras...)) if !(b isa Val))...])
+             for (a, b) in zip((l.args..., l.extras...), (bound..., l.extras...)) if !(b isa Val))...])
     else
-        KO.launch_binary(KO.MetalBackendTag(), path, entry, slots, grid, tg)
+        KO.encode_launch(KO.MetalBackendTag(), l.binary, slots, l.grid)
     end
-    return KO._pick_outs(args, bound)
+    return KO._pick_outs(l.args, bound)
 end
 
 # --- compiling -------------------------------------------------------------------------------------

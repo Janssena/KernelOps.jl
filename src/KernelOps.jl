@@ -20,14 +20,14 @@ include("ka.jl")
 export AbstractKernelOp, AbstractKernel, KernelBinary, OutArray
 export register_kernel!, add_variant!, use_kernel!, current_kernel, list_kernels
 export reset_kernel!, set_default_kernel!, clear_default_kernel!, selected_kernel
-export call_binary, ka_compile, backend_of
+export call_binary, run_binary, prepare_launch, time_binary, ka_compile, backend_of
 
 public opname, default_kernel, @default_kernel, default_candidates, kernelname, host, forward, backward, 
-    variant_key, extras, nearest, build!, source_tag, cache_dir, variants, variant, record_bindings, 
-    bind_launch, KernelBackend, CPUBackend, MetalBackendTag, CUDABackendTag, ROCmBackendTag, UnknownBackend,
+    variant_key, extras, nearest, build!, source_tag, cache_dir, variants, variant, record_bindings, execute,
+    Launch, KernelBackend, CPUBackend, MetalBackendTag, CUDABackendTag, ROCmBackendTag, UnknownBackend,
     GPUBackend, device_dense, realtype, traced_autodiff, KERNEL_IN_TRACED_AUTODIFF, tracing, cache_root, 
-    ka_binary_cache_dir, device_available, launch_binary, custom_call, ka_context, ka_grid, ka_backend_object, 
-    ka_state_words, device_zeros
+    ka_binary_cache_dir, device_available, custom_call, ka_context, ka_grid, ka_backend_object, 
+    ka_state_words, device_zeros, max_threads, device_time, device_backend, bind_slots
 
 """
     device_zeros(proto, T, dims...) -> array

@@ -8,10 +8,12 @@ struct OutArray{T,N}
     dims::NTuple{N,Int}
     zero::Bool
 end
-# `realtype`: a traced element type (`TracedRNumber{Float32}`) names its storage type.
+
 OutArray(::Type{T}, dims::Integer...; zero::Bool=false) where {T} =
     OutArray{realtype(T),length(dims)}(Int.(dims), zero)
+
 OutArray(::Type{T}, dims::Tuple; zero::Bool=false) where {T} = OutArray(T, dims...; zero)
+
 Base.eltype(::OutArray{T}) where {T} = T
 
 function _first_array(xs)   
@@ -52,14 +54,32 @@ right is the caller's job.
 It launches `cld.(extent, tile)` threadgroups: the problem size `extent` (an integer or a tuple of up to
 three axes, required) divided by what one threadgroup of the binary covers, its `tile`.
 
-The outputs are picked from `args` alone: `extras` (which may read `KernelBinary.params`, typed only
-at run time) are only bound, so whatever they return never reaches the result's type. They must
+The op-level layer: it finds the binary and its [`extras`](@ref), then [`run_binary`](@ref) does the
+rest. The outputs are picked from `args` alone: `extras` (which may read `KernelBinary.params`, typed
+only at run time) are only bound, so whatever they return never reaches the result's type. They must
 therefore not contain `OutArray`s.
 """
-function call_binary(op::AbstractKernelOp, k::AbstractKernel, name::Symbol, args...;
-        key::Tuple=variant_key(op, k, args...), extent=nothing)
+function call_binary(
+    op::AbstractKernelOp, k::AbstractKernel, name::Symbol, args...;
+    key::Tuple=variant_key(op, k, args...), extent=nothing
+)
+    _check_extent(op, k, extent)
+    b = _binary(op, k, name, key)
+    
+    return run_binary(
+        b, args...; extent, extras=extras(op, k, b), label=name
+    )
+end
+
+# `extent` is required: a call without one throws rather than guess.
+_check_extent(op, k, extent) = isnothing(extent) && throw(ArgumentError(
+    "no launch size for kernel `:$(kernelname(k))` of op `:$(opname(op))`: pass `extent=` (the " *
+    "problem size, divided by the binary's `tile`) to `call_binary`"))
+
+# The binary `name` of the variant for `key`.
+function _binary(op::AbstractKernelOp, k::AbstractKernel, name::Symbol, key::Tuple)
     v = variant(op, k, key)
-    b = get(v, name) do
+    return get(v, name) do
         throw(
             ArgumentError(
                 "variant $key of kernel `:$(kernelname(k))` has no binary `:$name`; " *
@@ -67,68 +87,245 @@ function call_binary(op::AbstractKernelOp, k::AbstractKernel, name::Symbol, args
             )
         )
     end
-    g = _launch_grid(op, k, b, extent)
+end
+
+"""
+    run_binary(b::KernelBinary, args...; extent, extras=(), label=Symbol(b.entry)) -> Tuple
+
+Launch `b` on `args` and return the outputs: `execute(prepare_launch(b, args...; …))`. The
+binary-level layer under [`call_binary`](@ref), which adds the registry lookup; call it directly to run
+a binary that is not registered (a tuner's candidate). Eager or traced, like `call_binary`.
+"""
+run_binary(b::KernelBinary, args...; kwargs...) = execute(prepare_launch(b, args...; kwargs...))
+
+
+"""
+    Launch
+
+One concrete launch of a [`KernelBinary`](@ref), made by [`prepare_launch`](@ref) and run by
+[`execute`](@ref) or timed by [`time_binary`](@ref):
+
+- `binary`: what is launched;
+- `args`, `extras`: the arguments as they will be bound (device wrappers already densified),
+  `OutArray`s still unallocated. `args` is a typed tuple, so the outputs' types infer;
+- `prelude`: what the binary takes ahead of its arguments (for an `is_ka` binary the backend's state
+  words and KA's context, else nothing);
+- `groups`: the threadgroups the problem needs, `cld.(extent, tile)`;
+- `grid`: the grid actually dispatched (`groups`, flattened by [`ka_grid`](@ref) for an `is_ka` binary);
+- `label`: its name in [`record_bindings`](@ref).
+"""
+struct Launch{A<:Tuple,E<:Tuple,P<:AbstractVector}
+    binary::KernelBinary
+    args::A
+    extras::E
+    prelude::P
+    groups::NTuple{3,Int}
+    grid::NTuple{3,Int}
+    label::Symbol
+end
+
+"""
+    prepare_launch(b::KernelBinary, args...; extent, extras=(), label=Symbol(b.entry)) -> Launch
+
+Turn a problem size into a concrete [`Launch`](@ref) of `b`, without running it: `cld.(extent, b.tile)`
+threadgroups, the KA prelude and flat grid for an `is_ka` binary, device wrappers densified
+([`device_dense`](@ref)). The binary need not be registered. Binding follows [`call_binary`](@ref):
+`(args..., extras...)` in the order given.
+"""
+function prepare_launch(b::KernelBinary, args...; 
+    extent=nothing, extras::Tuple=(), label::Symbol=Symbol(b.entry)
+)
+    isnothing(extent) && throw(ArgumentError(
+        "no launch size for binary `$(b.entry)`: pass `extent=` (the problem size, divided by the " *
+        "binary's `tile`)"
+    ))
+
     proto = _first_array(args)
+    isnothing(proto) && throw(ArgumentError("binary `$(b.entry)` was launched without any array argument"))
+    
     be = backend_of(proto)
-    prelude = Any[]
-    if b.is_ka
-        # A KA-compiled binary: KA's context (built by KA from this grid) ahead of the arguments, and the
-        # backend's own dispatch grid.
-        ctx, ghost = ka_context(be, g, b.threadgroup)
-        prelude = ka_prelude(be, ctx, ghost)
-        g = ka_grid(be, g)
-    end
+    groups = cld.(_pad3(extent), b.tile)
+    prelude, grid = _prelude_and_grid(be, b, groups)
     _make_dense = Base.Fix1(device_dense, be)
 
-    return bind_launch(proto, b.file, b.entry, b.threadgroup, prelude, map(_make_dense, args),
-        map(_make_dense, extras(op, k, b)), g, name)
+    return Launch(
+        b, 
+        map(_make_dense, args), 
+        map(_make_dense, extras), 
+        prelude, groups, grid, label
+    )
 end
 
-# The threadgroups to launch (see `call_binary`).
-function _launch_grid(op, k, b::KernelBinary, extent)
-    isnothing(extent) && throw(ArgumentError(
-        "no launch size for kernel `:$(kernelname(k))` of op `:$(opname(op))`: pass `extent=` (the " *
-        "problem size, divided by the binary's `tile`) to `call_binary`"))
-    return cld.(_pad3(extent), b.tile)
+# What `b` takes ahead of its arguments, and the grid it is dispatched on, for `groups` threadgroups. A
+# KA-compiled binary: KA's context (built by KA from this grid) ahead of the arguments, and the
+# backend's own dispatch grid.
+function _prelude_and_grid(be::KernelBackend, b::KernelBinary, groups::NTuple{3,Int})
+    b.is_ka || return (Any[], groups)
+    ctx, ghost = ka_context(be, groups, b.threadgroup)
+    return (ka_prelude(be, ctx, ghost), ka_grid(be, groups))
 end
 
 """
-    bind_launch(proto, path, entry, threadgroup, prelude, args, extras, grid, label) -> Tuple
+    execute(l::Launch) -> Tuple
 
-Bind `(prelude..., args..., extras...)` to `entry` in the binary at `path` and run it on a 3-D `grid`
-of threadgroups, returning the outputs in `OutArray` order. The outputs are picked from `args` only:
-`extras` are bound and nothing else, so their types cannot reach the result. They are the kernel's
-[`extras`](@ref) from [`call_binary`](@ref), and `()` for a kernel whose [`extras`](@ref) is empty. 
-Implemented by backend extensions, on the array kind of `proto`: eager device arrays (launched) or 
-traced arrays (a custom call).
+Run a prepared [`Launch`](@ref) and return its outputs, in `OutArray` order. What running means is
+the arrays' business: eager device arrays are launched (the backend extension's `execute(proto, l)`
+method), traced arrays become a custom call, and inside [`record_bindings`](@ref) nothing runs.
 """
-function bind_launch end
+execute(l::Launch) = execute(_first_array(l.args), l)
+
+execute(proto, ::Launch) = throw(ArgumentError(
+    "no backend can execute a launch on a $(typeof(proto)); load the package for that backend"
+))
+
+"""
+    bind_slots(proto, prelude, args, extras) -> (bound, slots)
+
+The one binding rule, shared by every eager launch ([`execute`](@ref), [`time_binary`](@ref)):
+each [`OutArray`](@ref) of `args` is allocated like `proto` (zero-filled if it asks), giving `bound`;
+`slots` are `(prelude..., bound..., extras...)` in order, a `Val` taking no slot.
+"""
+function bind_slots(proto, prelude, args::Tuple, extras::Tuple)
+    bound = map(args) do a
+        return a isa OutArray ? _alloc_out(proto, a) : a
+    end
+    
+    slots = Any[prelude...]
+    for a in (bound..., extras...)
+        a isa Val || push!(slots, a)
+    end
+    return (bound, slots)
+end
+
+function _alloc_out(proto, o::OutArray{T}) where {T}
+    a = similar(proto, T, o.dims)
+    o.zero && fill!(a, zero(T))
+    return a
+end
+
+"""
+    max_threads(binary::KernelBinary; backend=device_backend()) -> Int
+    max_threads(backend, binary::KernelBinary) -> Int
+
+The compiled binary's own threads-per-threadgroup ceiling: what its register use leaves of the
+device's. Dispatching over it does not raise but returns garbage AND an impossibly fast time, so
+eager launches and [`time_binary`](@ref) refuse it; a tuner asks this first to skip the
+candidate. The two-argument form is implemented by the backend extension.
+"""
+max_threads(b::KernelBinary; backend::KernelBackend=device_backend()) = max_threads(backend, b)
+
+max_threads(be::KernelBackend, ::KernelBinary) = throw(ArgumentError(
+    "no `max_threads` for backend $(typeof(be)); load the package for that backend"
+))
+
+"""
+    device_time(backend, binary::KernelBinary, slots, grid::NTuple{3,Int}; reps) -> Float64
+
+Seconds per dispatch of `reps` dispatches of `binary` over `grid`, back to back in ONE command buffer
+(or stream segment), from the device's own timestamps. `slots` are the bound arguments in slot order,
+as [`encode_launch`](@ref) takes them. No warm-up. Implemented by the backend extension; most callers
+want [`time_binary`](@ref), which binds the slots.
+"""
+device_time(be::KernelBackend, ::KernelBinary, slots, grid; reps) = throw(ArgumentError(
+    "no `device_time` for backend $(typeof(be)); load the package for that backend"
+))
+
+"""
+    time_binary(l::Launch; reps=3, warmup=1) -> Float64
+    time_binary(b::KernelBinary, args...; extent, extras=(), reps=3, warmup=1)
+    time_binary(op, kernel, name, args...; key=variant_key(op, kernel, args...), extent, reps=3, warmup=1)
+
+Seconds per dispatch of a binary on the device: `warmup` untimed launches, then ONE
+[`device_time`](@ref) of `reps` dispatches back to back, from the device's own timestamps. Host-side
+launch latency is excluded. Repeating the call and taking a minimum is the caller's policy.
+
+The core form times a prepared [`Launch`](@ref); the second prepares one for a binary that need not
+be registered (a tuner's candidate); the third resolves the registered variant and its
+[`extras`](@ref) as [`call_binary`](@ref) does. All bind with [`bind_slots`](@ref), exactly as an
+eager [`execute`](@ref).
+
+`OutArray`s are allocated once and reused by every dispatch (a `zero=true` one is zeroed once only),
+so their contents afterwards are meaningless and are not returned. The `reps` dispatches share cache
+state, which flatters a bandwidth-bound kernel slightly against a cold call.
+
+Throws if the binary's threadgroup exceeds [`max_threads`](@ref), on host arrays, and while tracing
+(timing is eager device work, which the tracer would capture).
+"""
+function time_binary(l::Launch; reps::Integer=3, warmup::Integer=1)
+    be = _timing_backend(l.args)
+    reps >= 1 || throw(ArgumentError("`reps` must be at least 1, got $reps"))
+    b = l.binary
+    lim = max_threads(be, b)
+    b.threadgroup <= lim || throw(ArgumentError(
+        "threadgroup $(b.threadgroup) exceeds this pipeline's limit of $lim; " *
+        "dispatching over it returns garbage AND a fast time"
+    ))
+    
+    _, slots = bind_slots(_first_array(l.args), l.prelude, l.args, l.extras)
+    for _ in 1:warmup
+        encode_launch(be, b, slots, l.grid)
+    end
+
+    return Float64(device_time(be, b, slots, l.grid; reps=Int(reps)))
+end
+
+function time_binary(b::KernelBinary, args...; 
+    extent=nothing, extras::Tuple=(), reps::Integer=3, warmup::Integer=1
+)
+    _timing_backend(args)
+    return time_binary(prepare_launch(b, args...; extent, extras); reps, warmup)
+end
+
+function time_binary(op::AbstractKernelOp, k::AbstractKernel, name::Symbol, args...; 
+    key::Tuple=variant_key(op, k, args...), extent=nothing, reps::Integer=3, warmup::Integer=1
+)
+    _check_extent(op, k, extent)
+    b = _binary(op, k, name, key)
+    return time_binary(b, args...; extent, extras=extras(op, k, b), reps, warmup)
+end
+
+# The device backend timing runs on: refuses tracing and host arrays.
+function _timing_backend(args)
+    tracing() && throw(ArgumentError("`time_binary` cannot run inside a trace: time the compiled program"))
+    proto = _first_array(args)
+    be = isnothing(proto) ? UnknownBackend() : backend_of(proto)
+    be isa GPUBackend || throw(ArgumentError(
+        "`time_binary` needs device arrays; got a $(typeof(be)) argument"
+    ))
+    return be
+end
 
 # --- inspecting what would be bound -----------------------------------------------------------------
 
 const _RECORD = Ref{Union{Nothing,Vector{Any}}}(nothing)
 
 """
-    record_bindings(f) -> Vector{(label, args)}
+    record_bindings(f) -> Vector{(; label, slots, groups, launch)}
 
-Run `f()` with every eager launch replaced by a record of what it would bind: the binary's name and
-its slots in order, each `kind => value` with `kind` one of `:bytes` (the KA prelude), `:out` (an
-allocated output), `:in` (an array), `:scalar`. Nothing is dispatched.
+Run `f()` with every eager launch replaced by a record of what it would bind: the launch's `label`
+(the name `call_binary` was given), its `slots` in order, each `kind => value` with `kind` one of
+`:bytes` (the KA prelude), `:out` (an allocated output), `:in` (an array), `:scalar`, and the
+threadgroups it would launch, `groups` (`cld.(extent, tile)`, before any flattening by
+[`ka_grid`](@ref)), and the [`Launch`](@ref) itself, which can be run or timed later
+([`execute`](@ref), [`time_binary`](@ref)) to replay what `f` launches. Nothing is dispatched. A record
+destructures as `label, slots, groups = rec`.
 """
 function record_bindings(f)
     prev = _RECORD[]
-    _RECORD[] = Any[]
+    rec = Any[]
+    _RECORD[] = rec
     try
         f()
-        return _RECORD[]
+        return rec
     finally
         _RECORD[] = prev
     end
 end
 
-# Called by an eager binder in place of launching while recording.
+# Called by an eager executor in place of launching while recording.
 recording() = _RECORD[] !== nothing
-record!(label, args) = push!(_RECORD[], (label, Tuple(args)))
+record!(l::Launch, slots) = 
+    push!(_RECORD[], (; label=l.label, slots=Tuple(slots), groups=l.groups, launch=l))
 
 # The allocated outputs, picked out of the bound arguments in `OutArray` order. Recursive over the tuple,
 # so the result type is inferred.

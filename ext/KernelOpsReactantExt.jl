@@ -51,7 +51,7 @@ first, so reversing is a pure relabelling XLA folds into the parameter or result
 _rev(x) = _mat(permutedims(x, ntuple(i -> ndims(x) - i + 1, ndims(x))))
 
 """
-    bind_launch(::AnyTracedRArray, path, entry, tg, prelude, args, extras, grid, label) -> Tuple
+    execute(::AnyTracedRArray, l::Launch) -> Tuple
 
 The traced binder: one `KO.custom_call` (dispatched on the compiling client's backend; on Metal,
 `mps.metal_kernel_lib`). Its buffer table follows
@@ -59,10 +59,10 @@ The traced binder: one `KO.custom_call` (dispatched on the compiling client's ba
 operand, an `OutArray` a result (`zero` ones zero-filled by jax-mps), a `Val` nothing. Arrays cross
 through `_rev`.
 """
-function KO.bind_launch(::AnyTracedRArray, path, entry, tg, prelude, args, extras, grid, label)
-    layout = Any[(:bytes, _le_bytes(p)) for p in prelude]
+function KO.execute(::AnyTracedRArray, l::KO.Launch)
+    layout = Any[(:bytes, _le_bytes(p)) for p in l.prelude]
     operands, shapes, eltypes = Any[], Any[], DataType[]
-    for a in (args..., extras...)
+    for a in (l.args..., l.extras...)
         if a isa KO.OutArray
             push!(layout, (a.zero ? :out_zero : :out, length(shapes)))
             push!(shapes, Base.reverse(a.dims))
@@ -74,8 +74,9 @@ function KO.bind_launch(::AnyTracedRArray, path, entry, tg, prelude, args, extra
             push!(layout, (:bytes, _le_bytes(a)))
         end
     end
-    results = KO.custom_call(reactant_backend(), entry, path, Tuple(operands), shapes, layout;
-        grid, threadgroup=tg, result_eltypes=Tuple(eltypes))
+    b = l.binary
+    results = KO.custom_call(reactant_backend(), b.entry, b.file, Tuple(operands), shapes, layout;
+        grid=l.grid, threadgroup=b.threadgroup, result_eltypes=Tuple(eltypes))
     return Tuple(map(_rev, results))
 end
 

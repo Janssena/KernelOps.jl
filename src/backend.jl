@@ -133,13 +133,27 @@ ka_backend_object(be::KernelBackend) = throw(ArgumentError(
     "no KernelAbstractions backend for $(typeof(be)); load the package for that backend"))
 
 """
-    launch_binary(backend, path, entry, args, grid, threadgroup)
+    encode_launch(backend, b::KernelBinary, slots, grid::NTuple{3,Int})
 
-Bind `args` (device arrays and bits scalars, in slot order) to `entry` inside the compiled binary at
-`path` and dispatch it on a 3-D `grid` of threadgroups, waiting for completion. Implemented by the
-backend extension.
+The lowest layer: bind `slots` (device arrays and bits scalars, in slot order, prelude included) to
+`b`'s entry point and dispatch it on a 3-D `grid` of `b.threadgroup`-thread groups, waiting for
+completion. Refuses a threadgroup over [`max_threads`](@ref). Implemented by the backend extension;
+callers want [`run_binary`](@ref), which builds the slots and grid.
 """
-function launch_binary end
+function encode_launch end
+
+"""
+    device_backend() -> KernelBackend
+
+The tag of the one usable device backend (see [`LOADED_BACKENDS`](@ref)). Throws when there is none,
+or several, since then the choice is the caller's.
+"""
+function device_backend()
+    tags = (metal=MetalBackendTag(), cuda=CUDABackendTag(), rocm=ROCmBackendTag())
+    length(LOADED_BACKENDS) == 1 || throw(ArgumentError(
+        "no single device backend: loaded are $(sort(collect(LOADED_BACKENDS))); pass `backend=`"))
+    return tags[only(LOADED_BACKENDS)]
+end
 
 """
     custom_call(backend, entry, path, operands, result_shapes, layout; grid, threadgroup, result_eltypes)
@@ -150,7 +164,7 @@ Embed the kernel `entry` of the compiled binary at `path` in a traced program as
 argument table in order, as `(:in, i)`, `(:out, i)`, `(:out_zero, i)` or `(:bytes, payload)`.
 
 A generic, so each backend extension (Reactant for Metal today; CUDA/ROCm later) adds a method for
-its own tag. The traced `bind_launch` calls it with the tag of the compiling client.
+its own tag. The traced `execute` calls it with the tag of the compiling client.
 """
 custom_call(be::KernelBackend, args...; kw...) = throw(ArgumentError(
     "no stablehlo.custom_call embedding for backend $(typeof(be)); load an extension that provides one"))
