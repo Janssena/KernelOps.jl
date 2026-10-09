@@ -329,7 +329,7 @@ Its manifest records `is_ka = true`, the tile and the tuning numbers:
 `record_bindings(f)` runs `f` with every launch replaced by a record of what it would bind:
 
 ```julia
-julia> label, slots = only(KernelOps.record_bindings(() -> SDPA()(q, k, v)));
+julia> label, slots, groups = only(KernelOps.record_bindings(() -> SDPA()(q, k, v)));
 
 julia> label => map(first, slots)          # with `:flash` selected
 :fwd => (:in, :in, :in, :out, :scalar, :scalar, :scalar, :scalar, :scalar)
@@ -339,8 +339,22 @@ julia> label => map(first, slots)          # with `:ka` selected
 ```
 
 The KA binary's two leading `:bytes` slots are the state word and KA's context; its `Val` takes no
-slot. Each slot's second element is the value bound, so a test can pin types and sizes too. This is
-the cheapest guard against a mis-ordered argument list.
+slot. Each slot's second element is the value bound, so a test can pin types and sizes too. `groups`
+is the number of threadgroups along each axis, `cld.(extent, tile)`: with 100 queries and a tile of 64,
+`(2, 1, 1)`. This is the cheapest guard against a mis-ordered argument list or a wrong launch size.
+
+## Running a binary that is not registered
+
+`call_binary` is a lookup on top of `run_binary`, which runs one given `KernelBinary` with the same
+binding rules. A tuner compiling candidates calls it directly, without registering each one:
+
+```julia
+cand = ka_compile(KernelOps.MetalBackendTag(), sdpa_ka!, argtypes; tg=128, name="sdpa_fwd_t128")
+o, = run_binary(cand, OutArray(Float32, dv, n), q, k, v, d, n, m, dv, scale; extent=n)
+```
+
+`prepare_launch` (same arguments) returns the launch as a `KernelOps.Launch` without running it, so one
+prepared launch can be both checked (`KernelOps.execute(l)`) and timed (`time_binary(l)`).
 
 ## Kernels from another package
 
