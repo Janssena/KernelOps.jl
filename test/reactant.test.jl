@@ -1,0 +1,70 @@
+# Traced on the jax-mps Metal client: the SAME binaries the eager path launches, embedded as
+# `mps.metal_kernel_lib` custom calls, with the backward attached as the forward's reverse rule.
+# The forward of a real op (SDPAOps) traced is in sdpa.test.jl; here, what only the fixtures have: a
+# backward binary, autodiff refusal, and the binary-level launch features.
+
+using Test, Random, KernelOps, Reactant, Enzyme
+# Metal (and the jax-mps client) only exist on a Mac: elsewhere these sections skip.
+@static if Sys.isapple()
+    using Metal
+end
+isdefined(@__MODULE__, :Residual) || include("fixtures.jl")
+Sys.isapple() && (isdefined(@__MODULE__, :mps_client) || include("mps_client.jl"))
+
+const _MPS = Sys.isapple() ? mps_client() : nothing
+
+if _MPS === nothing || !Sys.isapple() || !Metal.functional()
+    @warn "no jax-mps Metal client (or Metal not functional); skipping traced tests" maxlog = 1
+else
+    prev = Reactant.XLA.default_backend()
+    Reactant.set_default_backend(_MPS)
+    try
+        local rng = Random.Xoshiro(2)
+        isempty(KernelOps.variants(Residual(), ResidualKA())) && register_residual!()
+        @assert current_kernel(:residual) === :ka
+
+        @testset "traced backward" begin
+            n = 64
+            x, y, dz = randn(rng, Float32, n), randn(rng, Float32, n), randn(rng, Float32, n)
+            g(x, y, dz) = KernelOps.backward(Residual(), ResidualKA(), (x, y, 3.0f0), x, dz)[1:2]
+            gx, gy = @jit g(Reactant.to_rarray(x), Reactant.to_rarray(y), Reactant.to_rarray(dz))
+            @test Array(gx) ≈ 3 .* dz
+            @test Array(gy) ≈ dz
+        end
+
+        @testset "traced autodiff refuses" begin
+            x = Reactant.to_rarray(randn(rng, Float32, 16))
+            h(x) = Enzyme.gradient(Enzyme.Reverse, x -> sum(Residual()(x, x, 1.0f0)), x)
+            err = try
+                Reactant.@compile h(x)
+                nothing
+            catch e
+                e
+            end
+            @test err !== nothing && occursin("cannot be differentiated under Reactant", sprint(showerror, err))
+        end
+
+        @testset "ka_compile + call_binary, traced" begin
+            register_logit_scale!()
+            x = randn(rng, Float32, 100)
+            xr = Reactant.to_rarray(x)
+            f(x) = logit_scale(x, 2.0f0; out_len=128)
+            y = Array(@jit f(xr))
+            @test y[1:100] ≈ 2.0f0 .* x
+            @test all(iszero, y[101:128])
+        end
+
+        @testset "run_binary of an unregistered binary, traced" begin
+            bin = register_logit_scale!()[:main]
+            # Built inside the traced function: a captured `KernelBinary` (abstract `params`) is not traceable.
+            file, entry = bin.file, bin.entry
+            loose() = KernelBinary(file; entry, threadgroup=LS_TG, is_ka=true)
+            x = randn(rng, Float32, 100)
+            f(x) = only(run_binary(loose(), OutArray(Float32, 100), x, 2.0f0, Int32(100), Val(LS_TG);
+                extent=100))
+            @test Array(@jit f(Reactant.to_rarray(x))) ≈ 2.0f0 .* x
+        end
+    finally
+        Reactant.set_default_backend(prev)
+    end
+end
