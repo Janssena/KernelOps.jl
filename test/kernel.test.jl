@@ -126,6 +126,12 @@ end
     @test_throws ArgumentError KO.variant(Residual(), Other(), (:Float16, 64))
     # Binaries were copied into the kernel's directory.
     @test all(b -> startswith(b.file, KO.cache_dir(Residual())), [v[:fwd] for v in values(vs)])
+    # A package's own subdirectory beside the binaries survives re-registration (only files are pruned).
+    own = joinpath(KO.cache_dir(Residual()), "other", "calibration")
+    mkpath(own); write(joinpath(own, "x.toml"), "a = 1")
+    add_variant!(Residual(), Other(), (:Float32, 64);
+        fwd=KernelBinary(fake_bin("f64b"); threadgroup=32, params=(; tg=32, rows=64), tile=32))
+    @test isfile(joinpath(own, "x.toml"))
 
     # A fresh session: the manifest reloads, params and all.
     snapshot = copy(vs)

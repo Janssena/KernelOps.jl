@@ -482,10 +482,13 @@ function save_manifest(op, k)
             for (n, b) in sort(collect(v); by=first)])
         for (key, v) in sort(collect(vs); by=string ∘ first)])
     open(io -> TOML.print(io, tbl), manifest_path(op, k), "w")
-    # Binaries no variant names any more (a re-registered variant's predecessor) are removed.
+    # Binaries no variant names any more (a re-registered variant's predecessor) are removed. Only
+    # regular files: a package may keep its own data beside a kernel's binaries in a subdirectory
+    # (a tuning calibration, say).
     keep = Set(basename(b.file) for v in values(vs) for b in values(v))
     for f in readdir(kernel_dir(op, k))
-        (f == "manifest.toml" || f in keep) || rm(joinpath(kernel_dir(op, k), f); force=true)
+        path = joinpath(kernel_dir(op, k), f)
+        (f == "manifest.toml" || f in keep || !isfile(path)) || rm(path; force=true)
     end
 end
 
