@@ -91,7 +91,7 @@ import KernelOps: extras
     i = (@index(Group, Linear) - 1) * TG + @index(Local, Linear)   # this thread's query
     if i <= n
         # … softmax(k[:, j]' q[:, i] * scale) over j, weighting v into o[:, i], through
-        #   unsafe_load / unsafe_store! (see docs/examples/SDPAOps for a full kernel)
+        #   unsafe_load / unsafe_store! (see examples/SDPAOps for a full kernel)
     end
 end
 
