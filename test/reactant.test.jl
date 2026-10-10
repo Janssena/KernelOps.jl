@@ -3,7 +3,7 @@
 # The forward of a real op (SDPAOps) traced is in sdpa.test.jl; here, what only the fixtures have: a
 # backward binary, autodiff refusal, and the binary-level launch features.
 
-using Test, Random, KernelOps, Reactant, Enzyme
+using Test, Random, KernelDispatch, Reactant, Enzyme
 # Metal (and the jax-mps client) only exist on a Mac: elsewhere these sections skip.
 @static if Sys.isapple()
     using Metal
@@ -20,13 +20,13 @@ else
     Reactant.set_default_backend(_MPS)
     try
         local rng = Random.Xoshiro(2)
-        isempty(KernelOps.variants(Residual(), ResidualKA())) && register_residual!()
+        isempty(KernelDispatch.variants(Residual(), ResidualKA())) && register_residual!()
         @assert current_kernel(:residual) === :ka
 
         @testset "traced backward" begin
             n = 64
             x, y, dz = randn(rng, Float32, n), randn(rng, Float32, n), randn(rng, Float32, n)
-            g(x, y, dz) = KernelOps.backward(Residual(), ResidualKA(), (x, y, 3.0f0), x, dz)[1:2]
+            g(x, y, dz) = KernelDispatch.backward(Residual(), ResidualKA(), (x, y, 3.0f0), x, dz)[1:2]
             gx, gy = @jit g(Reactant.to_rarray(x), Reactant.to_rarray(y), Reactant.to_rarray(dz))
             @test Array(gx) ≈ 3 .* dz
             @test Array(gy) ≈ dz

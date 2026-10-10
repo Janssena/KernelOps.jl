@@ -1,7 +1,7 @@
 """
     SDPAOps
 
-The example package of the KernelOps tutorials (`docs/tutorial/`): scaled dot-product attention as
+The example package of the KernelDispatch tutorials (`docs/tutorial/`): scaled dot-product attention as
 an op with two kernels — a hand-written Metal binary (standing in for a Triton one) and a
 KernelAbstractions kernel compiled to a binary.
 
@@ -9,8 +9,8 @@ KernelAbstractions kernel compiled to a binary.
 """
 module SDPAOps
 
-using KernelOps, KernelAbstractions, LinearAlgebra
-import KernelOps: opname, kernelname, host, forward, backward, variant_key, extras, build!,
+using KernelDispatch, KernelAbstractions, LinearAlgebra
+import KernelDispatch: opname, kernelname, host, forward, backward, variant_key, extras, build!,
     source_tag
 
 export SDPA, FlashAttn, SDPAKA
@@ -36,7 +36,7 @@ kernelname(::SDPAKA) = :ka
 const SDPAKernels = Union{FlashAttn,SDPAKA}       # for what both share: the backward
 
 # `:flash` unless the package's preference names `:ka` (`set_default_kernel!`).
-KernelOps.@default_kernel SDPA FlashAttn() SDPAKA()
+KernelDispatch.@default_kernel SDPA FlashAttn() SDPAKA()
 
 _sizes(q, k, v) = (Int32(size(q, 1)), Int32(size(q, 2)), Int32(size(k, 2)), Int32(size(v, 1)))
 
@@ -52,7 +52,7 @@ end
 # `variant_key` sees the arguments as `call_binary` got them: this binary's order. One variant per
 # element type (`realtype` also names it for a traced array under Reactant).
 variant_key(::SDPA, ::FlashAttn, q, k, v, o, n, m, d, dv, scale) = (
-    nameof(KernelOps.realtype(eltype(q))),
+    nameof(KernelDispatch.realtype(eltype(q))),
 )
 
 # The KernelAbstractions kernel: the output first, its own order of sizes, the tile size a `Val`.
@@ -98,7 +98,7 @@ function forward(op::SDPA, kern::SDPAKA, q, k, v)
     return only(result)
 end
 variant_key(::SDPA, ::SDPAKA, o, q, k, v, d, n, m, dv, scale) = (
-    nameof(KernelOps.realtype(eltype(q))),
+    nameof(KernelDispatch.realtype(eltype(q))),
 )
 # The tile size is compiled in: appended as a `Val`, it takes no argument slot.
 extras(::SDPA, ::SDPAKA, b::KernelBinary) = (Val(b.params.tg),)
@@ -123,7 +123,7 @@ function build!(op::SDPA, kern::SDPAKA, key::Tuple)
     tg = 64
     argtypes = (Vector{Float32}, Vector{Float32}, Vector{Float32}, Vector{Float32},
         Int32, Int32, Int32, Int32, Float32, Val{tg})
-    fwd = ka_compile(KernelOps.MetalBackendTag(), sdpa_ka!, argtypes;
+    fwd = ka_compile(KernelDispatch.MetalBackendTag(), sdpa_ka!, argtypes;
         tg, name="sdpa_fwd_$(source_tag(kern))", params=(; tg))
     add_variant!(op, kern, key; fwd)
     return nothing

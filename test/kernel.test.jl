@@ -1,16 +1,16 @@
 # Registration, selection, variants and the manifest: no device needed. Binaries are stand-in files,
 # copied and hashed but never opened.
 
-using Test, KernelOps
+using Test, KernelDispatch
 isdefined(@__MODULE__, :Residual) || include("fixtures.jl")
 
-const KO = KernelOps
+const KO = KernelDispatch
 
 struct Other <: AbstractKernel end
-KernelOps.kernelname(::Other) = :other
-KernelOps.source_tag(::Other) = "v1"
+KernelDispatch.kernelname(::Other) = :other
+KernelDispatch.source_tag(::Other) = "v1"
 # Fall back to the largest registered size below the requested one.
-function KernelOps.nearest(::Residual, ::Other, keys, key)
+function KernelDispatch.nearest(::Residual, ::Other, keys, key)
     below = [k for k in keys if k[1] == key[1] && k[2] <= key[2]]
     isempty(below) ? nothing : argmax(k -> k[2], below)
 end
@@ -26,9 +26,9 @@ end
 
 # A kernel from elsewhere under a name the op already uses.
 struct Impostor <: AbstractKernel end
-KernelOps.kernelname(::Impostor) = :other
+KernelDispatch.kernelname(::Impostor) = :other
 struct Unregistered <: AbstractKernel end
-KernelOps.kernelname(::Unregistered) = :unregistered
+KernelDispatch.kernelname(::Unregistered) = :unregistered
 
 @testset "kernel names are unique per op" begin
     @test register_kernel!(Residual(), Other()) === Other()   # the same kernel again: fine
@@ -164,7 +164,7 @@ end
 end
 
 @testset "no attention in the generic code" begin
-    # KernelOps is op-generic: attention is ONE op, declared by its user (LuxTriangleAttention's
+    # KernelDispatch is op-generic: attention is ONE op, declared by its user (LuxTriangleAttention's
     # `SDPA`). Nothing here may know its roles or name it.
     root = joinpath(@__DIR__, "..")
     files = [joinpath(d, f) for d in (joinpath(root, "src"), joinpath(root, "ext"), joinpath(root, "ext", "reactant"))
@@ -177,7 +177,7 @@ end
 
 # No `backward` overload: the error lists the variant's launches, one of which may be the backward.
 struct BwdLess <: AbstractKernel end
-KernelOps.kernelname(::BwdLess) = :bwdless
+KernelDispatch.kernelname(::BwdLess) = :bwdless
 register_kernel!(Residual(), BwdLess())
 add_variant!(Residual(), BwdLess(), (); fwd=KernelBinary(fake_bin("f"); threadgroup=32),
     bwd=KernelBinary(fake_bin("b"); threadgroup=32))
@@ -195,14 +195,14 @@ end
 struct Plainly <: AbstractKernelOp end
 struct PlainK <: AbstractKernel end
 struct OtherResidual <: AbstractKernelOp end
-KernelOps.opname(::OtherResidual) = :residual                      # clashes with `Residual`'s name
+KernelDispatch.opname(::OtherResidual) = :residual                      # clashes with `Residual`'s name
 struct DeclOp <: AbstractKernelOp end
 struct DeclA <: AbstractKernel end
 struct DeclB <: AbstractKernel end
-KernelOps.@default_kernel DeclOp DeclA() DeclB()
+KernelDispatch.@default_kernel DeclOp DeclA() DeclB()
 struct LazyK <: AbstractKernel end
 const LAZY_CACHE = mktempdir()
-KernelOps.cache_dir(::Plainly) = joinpath(LAZY_CACHE, "plainly")
+KernelDispatch.cache_dir(::Plainly) = joinpath(LAZY_CACHE, "plainly")
 
 @testset "names and lazy registration" begin
     @test KO.opname(Plainly()) === :Plainly && KO.kernelname(PlainK()) === :PlainK

@@ -1,4 +1,4 @@
-name = "KernelOps"
+name = "KernelDispatch"
 uuid = "8d34074f-262e-46e2-9f95-b1abcc740b38"
 version = "0.1.0"
 authors = ["Janssena <alexanderjanssen@live.com>"]
@@ -14,9 +14,9 @@ Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
 Reactant = "3c362404-f566-11ee-1572-e11a4b42c853"
 
 [extensions]
-KernelOpsEnzymeExt = "Enzyme"
-KernelOpsMetalExt = "Metal"
-KernelOpsReactantExt = "Reactant"
+KernelDispatchEnzymeExt = "Enzyme"
+KernelDispatchMetalExt = "Metal"
+KernelDispatchReactantExt = "Reactant"
 
 [compat]
 Enzyme = "0.13"

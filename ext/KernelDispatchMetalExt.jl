@@ -1,15 +1,15 @@
-module KernelOpsMetalExt
+module KernelDispatchMetalExt
 
-# Metal's half of KernelOps: binding arguments to a compiled `.metallib` and dispatching it (the eager
+# Metal's half of KernelDispatch: binding arguments to a compiled `.metallib` and dispatching it (the eager
 # `execute` every `call_binary` / `run_binary` ends in), and ahead-of-time compilation of
 # KernelAbstractions kernels.
 
 import Metal: AS, GPUCompiler, LinearAlgebra
 
 using Metal
-using KernelOps
+using KernelDispatch
 
-const KO = KernelOps
+const KO = KernelDispatch
 
 dptr(::Type{T}) where {T} = Core.LLVMPtr{T,AS.Device}
 

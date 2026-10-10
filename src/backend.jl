@@ -80,7 +80,7 @@ throw_traced_autodiff(what::AbstractString) = throw(ArgumentError(
     "$what cannot be differentiated under Reactant: Enzyme-JAX cannot differentiate the kernel's " *
     "custom call yet (no custom reverse rules; see EnzymeAD/Enzyme#2516). Use the kernel for " *
     "forward-only programs, and switch it off for any program that is differentiated. " *
-    "`KernelOps.KERNEL_IN_TRACED_AUTODIFF[] = true` disables this check once Enzyme-JAX supports it."))
+    "`KernelDispatch.KERNEL_IN_TRACED_AUTODIFF[] = true` disables this check once Enzyme-JAX supports it."))
 
 check_traced_autodiff(x, what::AbstractString) =
     (traced_autodiff(x) && !KERNEL_IN_TRACED_AUTODIFF[]) && throw_traced_autodiff(what)
@@ -99,10 +99,10 @@ const _TRACING = Ref{Function}(() -> false)
 """
     cache_root() -> String
 
-Root of KernelOps' on-disk cache, overridable with `KERNELOPS_CACHE`. An op's own registry lives
+Root of KernelDispatch' on-disk cache, overridable with `KERNELDISPATCH_CACHE`. An op's own registry lives
 under [`cache_root(op)`](@ref), which an op may point elsewhere.
 """
-cache_root() = get(ENV, "KERNELOPS_CACHE", joinpath(homedir(), ".cache", "KernelOps"))
+cache_root() = get(ENV, "KERNELDISPATCH_CACHE", joinpath(homedir(), ".cache", "KernelDispatch"))
 
 """
     LOADED_BACKENDS

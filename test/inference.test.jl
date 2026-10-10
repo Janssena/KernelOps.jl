@@ -3,14 +3,14 @@
 # launches (a second run would dispatch a second kernel); `@test_nowarn` where a warning is the failure.
 # The op is SDPAOps: `FlashAttn` is a plain binary, `SDPAKA` a KA binary with `extras`.
 
-using Test, KernelOps, SDPAOps
+using Test, KernelDispatch, SDPAOps
 # Metal (and the jax-mps client) only exist on a Mac: elsewhere these sections skip.
 @static if Sys.isapple()
     using Metal
 end
 isdefined(@__MODULE__, :Residual) || include("fixtures.jl")
 
-const KOI = KernelOps
+const KOI = KernelDispatch
 
 @testset "OutArray" begin
     @test (@inferred OutArray(Float32, 8)) isa OutArray{Float32,1}
@@ -72,7 +72,7 @@ if !Sys.isapple() || !Metal.functional()
     @warn "Metal not functional; skipping Metal inference tests" maxlog = 1
 else
     @testset "routing on Metal arrays" begin
-        W = Base.get_extension(KernelOps, :KernelOpsMetalExt).WrappedMtlArray
+        W = Base.get_extension(KernelDispatch, :KernelDispatchMetalExt).WrappedMtlArray
         x = MtlArray(rand(Float32, 4, 6))
         tag = KOI.MetalBackendTag()
         plain = (x, reshape(x, 6, 4), view(x, :, 2:3))        # Metal.jl hands back an `MtlArray`
@@ -108,7 +108,7 @@ else
     @testset "launch path" begin
         d, n, m, dv = 16, 8, 6, 4
         q, k, v = (MtlArray(rand(Float32, r, c)) for (r, c) in ((d, n), (d, m), (dv, m)))
-        ref = KernelOps.host(SDPA(), Array(q), Array(k), Array(v))
+        ref = KernelDispatch.host(SDPA(), Array(q), Array(k), Array(v))
         register_kernel!(SDPA(), SDPADyn())
         add_variant!(SDPA(), SDPADyn(), (:Float32,); KOI.variant(SDPA(), SDPAKA(), (:Float32,))...)
         @test !isconcretetype(Base.promote_op(extras, SDPA, SDPADyn, KernelBinary))   # length unknown

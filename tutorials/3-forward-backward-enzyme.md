@@ -99,7 +99,7 @@ function backward(op::SDPA, kern::FlashAttn, (q, k, v), o, dout)
     d, n, m, dv = _sizes(q, k, v)
     dq, dk, dv_ = call_binary(op, kern, :bwd, q, k, v, o, dout,
         OutArray(Float32, d, n), OutArray(Float32, d, m), OutArray(Float32, dv, m),
-        n, m, d, dv, _scale(q); key=(nameof(KernelOps.realtype(eltype(q))),), extent=m)
+        n, m, d, dv, _scale(q); key=(nameof(KernelDispatch.realtype(eltype(q))),), extent=m)
     return (dq, dk, dv_)
 end
 ```
@@ -111,7 +111,7 @@ backward can share a variant.
 
 ## Gradients with Enzyme
 
-KernelOps' Enzyme extension adds a single reverse rule on `forward(op, kernel, args...)`, for every op / 
+KernelDispatch' Enzyme extension adds a single reverse rule on `forward(op, kernel, args...)`, for every op / 
 kernel. Enzyme never looks inside your forward or the binary. Its reverse calls your `backward` and
 accumulates the gradients into the `Duplicated` shadows of the arguments.
 
@@ -169,4 +169,4 @@ In a Reactant-compiled program the forward is a custom call that names the binar
 differentiate a custom call yet (EnzymeAD/Enzyme#2516), so a gradient traced *through* the op throws
 instead of silently giving a wrong answer. Call `backward` directly on the traced arrays instead; it is
 ordinary traced code, and a `:bwd` binary becomes a custom call of its own. Once Enzyme-JAX supports
-it, `KernelOps.KERNEL_IN_TRACED_AUTODIFF[] = true` lifts the check.
+it, `KernelDispatch.KERNEL_IN_TRACED_AUTODIFF[] = true` lifts the check.

@@ -8,7 +8,7 @@ unknown = setdiff(ARGS, SECTIONS)
 isempty(unknown) || error("unknown test section(s) $unknown; known: $SECTIONS")
 selected(name) = isempty(ARGS) || name in ARGS
 
-@testset "KernelOps" begin
+@testset "KernelDispatch" begin
     include("fixtures.jl")
     
     selected("kernels") && @testset "kernels and registry" begin

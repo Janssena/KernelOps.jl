@@ -5,7 +5,7 @@
 //
 // Column-major (Julia) layout: q is d×n, k is d×m, v is dv×m, o is dv×n; each column is one
 // query/key/value. Argument order, Triton style: inputs, the output, then sizes and the scale.
-// KernelOps binds every argument as a buffer (a scalar too), in order, from index 0.
+// KernelDispatch binds every argument as a buffer (a scalar too), in order, from index 0.
 
 #include <metal_stdlib>
 using namespace metal;

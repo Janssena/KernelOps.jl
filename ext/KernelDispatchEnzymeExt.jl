@@ -1,4 +1,4 @@
-module KernelOpsEnzymeExt
+module KernelDispatchEnzymeExt
 
 # One reverse rule for every op: on `forward(op, kernel, args...)`, the call `op(args...)` makes on a
 # device and the one a caller may make directly. Enzyme therefore never enters a `forward` overload
@@ -9,11 +9,11 @@ module KernelOpsEnzymeExt
 # exact, but Enzyme cannot differentiate ordinary Metal.jl code around it. Its payoff is CUDA; on
 # Apple hardware, train through Reactant.
 
-using KernelOps
+using KernelDispatch
 using Enzyme
 using Enzyme: EnzymeRules
 
-const KO = KernelOps
+const KO = KernelDispatch
 
 # Which kernel runs is a table lookup, not something to differentiate.
 EnzymeRules.inactive(::typeof(KO.selected_kernel), args...) = nothing

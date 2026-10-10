@@ -3,7 +3,7 @@
 # a fresh Julia process, with its own environment and a depot of its own in front for the compiled
 # caches.
 
-using Test, KernelOps, SDPAOps
+using Test, KernelDispatch, SDPAOps
 
 # Under `Pkg.test` the parent has `JULIA_LOAD_PATH=@:<sandbox>`, which has no `@stdlib`: a child
 # inheriting it cannot even `using Pkg`. A child gets the default load path and its own project.
@@ -16,17 +16,17 @@ end
 
 function pref_env()
     env, depot = mktempdir(), mktempdir()
-    code = "using Pkg; Pkg.offline(true); Pkg.develop([PackageSpec(path=$(repr(pkgdir(KernelOps)))), " *
+    code = "using Pkg; Pkg.offline(true); Pkg.develop([PackageSpec(path=$(repr(pkgdir(KernelDispatch)))), " *
            "PackageSpec(path=$(repr(pkgdir(SDPAOps))))])"
     run(pipeline(child(code, env); stdout=devnull))
     return env, depot
 end
 
-# Run `code` after `using SDPAOps, KernelOps` in the environment; (stdout, stderr).
+# Run `code` after `using SDPAOps, KernelDispatch` in the environment; (stdout, stderr).
 function in_env(env, depot, code)
     out, err = IOBuffer(), IOBuffer()
     depots = join([depot; DEPOT_PATH], Sys.iswindows() ? ";" : ":")
-    run(pipeline(child("using SDPAOps, KernelOps; $code", env; depots); stdout=out, stderr=err))
+    run(pipeline(child("using SDPAOps, KernelDispatch; $code", env; depots); stdout=out, stderr=err))
     return String(take!(out)), String(take!(err))
 end
 
@@ -42,7 +42,7 @@ end
     @test occursin("kernel.sdpa", read(joinpath(env, "LocalPreferences.toml"), String))
     # A compile-time preference: the cache is rebuilt and `:ka` is the baked-in default.
     @test first(in_env(env, depot, current)) == "ka"
-    @test first(in_env(env, depot, "print(KernelOps.default_kernel(SDPAOps.SDPA()))")) == "SDPAKA()"
+    @test first(in_env(env, depot, "print(KernelDispatch.default_kernel(SDPAOps.SDPA()))")) == "SDPAKA()"
 
     in_env(env, depot, "clear_default_kernel!(:sdpa)")
     @test first(in_env(env, depot, current)) == "flash"

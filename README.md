@@ -1,4 +1,4 @@
-# KernelOps.jl
+# KernelDispatch.jl
 
 Simplify working with compiled kernel binaries built anywhere, directly in Julia!
 - Define an op
@@ -32,9 +32,9 @@ a method, so an op call is type-stable.
 Registering a single kernel for a scaled dot-product attention operation (`q: d×n`, `k: d×m`, `v: dv×m` → `o: dv×n`):
 
 ```julia
-import KernelOps: host, forward
+import KernelDispatch: host, forward
 
-using KernelOps
+using KernelDispatch
 
 # Define your operation
 struct SDPA <: AbstractKernelOp end
@@ -47,7 +47,7 @@ host(::SDPA, q, k, v) = v * softmax((k' * q) ./ sqrt(Float32(size(q, 1))))
 struct FlashAttn <: AbstractKernel end
 
 # For package developers
-KernelOps.@default_kernel SDPA FlashAttn()
+KernelDispatch.@default_kernel SDPA FlashAttn()
 
 add_variant!(
   SDPA(), FlashAttn(); fwd = KernelBinary("flash.metallib"; threadgroup=64)
@@ -58,7 +58,7 @@ function forward(op::SDPA, kernel::FlashAttn, q, k, v)
     (d, n), m, dv = Int32.(size(q)), Int32(size(k, 2)), Int32(size(v, 1))
     o = OutArray(Float32, dv, n) # Provide the shapes of the output
     scale = inv(sqrt(Float32(d)))
-    # `extent`: the problem size (one query each); KernelOps divides it by the binary's `tile`.
+    # `extent`: the problem size (one query each); KernelDispatch divides it by the binary's `tile`.
     # :fwd should match the kwarg that is used in add_variant!
     result = call_binary(op, kernel, :fwd, q, k, v, o, n, m, d, dv, scale; extent=n) # Returns a Tuple
     return only(result)                                       # of the OutArrays: here, just `o`
@@ -84,7 +84,7 @@ it joins the op as another kernel: its own `forward`, and a binary from `ka_comp
 
 ```julia
 using KernelAbstractions
-import KernelOps: extras
+import KernelDispatch: extras
 
 @kernel unsafe_indices = true function sdpa_ka!(q, k, v, o, n::Int32, m::Int32, d::Int32, dv::Int32,
         scale::Float32, ::Val{TG}) where {TG}
@@ -110,7 +110,7 @@ argtypes = (
   Int32, Int32, Int32, Int32, Float32, Val{64}
 )
 
-fwd = ka_compile(KernelOps.MetalBackendTag(), sdpa_ka!, argtypes; tg=64, name="sdpa_ka_v1")
+fwd = ka_compile(KernelDispatch.MetalBackendTag(), sdpa_ka!, argtypes; tg=64, name="sdpa_ka_v1")
 add_variant!(SDPA(), SDPAKA(); fwd)
 use_kernel!(SDPA(), SDPAKA())
 ```
@@ -128,7 +128,7 @@ use_kernel!(SDPA(), SDPAKA())
   is defined).
 - **Not for tracing KA kernels.** Under Reactant the program only *names* the compiled file, so XLA
   never sees the kernel's code. To have Reactant trace a KA kernel itself, run Reactant over the
-  `@kernel` function instead of running through KernelOps. The ability to optionally trace kernels is 
+  `@kernel` function instead of running through KernelDispatch. The ability to optionally trace kernels is 
   planned functionality (but is currently only supported through CUDA in Reactant).
 
 ## AD
@@ -137,4 +137,4 @@ use_kernel!(SDPA(), SDPAKA())
   `backward`, so Enzyme never enters your `forward` or the binary.
 - **Under Reactant:** call `backward` directly. A gradient traced *through* a kernel throws, because
   Enzyme-JAX cannot differentiate a custom call yet (EnzymeAD/Enzyme#2516); set
-  `KernelOps.KERNEL_IN_TRACED_AUTODIFF[] = true` once it can.
+  `KernelDispatch.KERNEL_IN_TRACED_AUTODIFF[] = true` once it can.

@@ -128,7 +128,7 @@ arguments through unchanged would bind them wrongly, silently. A kernel without 
 forward(op::AbstractKernelOp, args...) = forward(op, selected_kernel(op), args...)
 forward(op::AbstractKernelOp, k::AbstractKernel, args...) = throw(ArgumentError(
     "kernel `:$(kernelname(k))` of op `:$(opname(op))` has no `forward`: define " *
-    "`KernelOps.forward(op, kernel, args...)` to build its binary's arguments (outputs as `OutArray`, " *
+    "`KernelDispatch.forward(op, kernel, args...)` to build its binary's arguments (outputs as `OutArray`, " *
     "sizes and scalars in the binary's types) and launch it with `call_binary(...; extent=...)`"
 ))
 
@@ -140,7 +140,7 @@ its outputs `outs` and their `cotangents`. No default: overload it to make an op
 """
 function backward(op::AbstractKernelOp, k::AbstractKernel, args, outs, cots)
     msg = "op `:$(opname(op))` kernel `:$(kernelname(k))` has no `backward`; overload " *
-        "`KernelOps.backward(op, kernel, args, outs, cotangents)` to differentiate it"
+        "`KernelDispatch.backward(op, kernel, args, outs, cotangents)` to differentiate it"
     names = _launch_names(op, k, args)
     length(names) > 1 && (msg *= ". The variant for these arguments has the launches " *
         join((":$n" for n in names), ", ") * ": call the backward one there with " *
@@ -278,7 +278,7 @@ in the op's package; `nothing` (no default) otherwise.
 """
 default_kernel(::AbstractKernelOp) = nothing
 
-# The session override per op type, redefined by `use_kernel!`. Owned by KernelOps, so a switch
+# The session override per op type, redefined by `use_kernel!`. Owned by KernelDispatch, so a switch
 # never overwrites a method of the op's package.
 _override(::AbstractKernelOp) = nothing
 
@@ -293,7 +293,7 @@ function _set_override!(o::AbstractKernelOp, k::Union{Nothing,AbstractKernel})
     Base.invokelatest(_override, o) === k && return nothing      # unchanged: invalidate nothing
     _generating_output() && throw(ArgumentError(
         "kernels cannot be switched while precompiling; set the default of op `:$(opname(o))` with " *
-        "`KernelOps.@default_kernel` (and its preference with `set_default_kernel!`) instead"))
+        "`KernelDispatch.@default_kernel` (and its preference with `set_default_kernel!`) instead"))
     n = SWITCH_EPOCH[] + 1
     @eval begin
         _override(::$(typeof(o))) = $k
@@ -398,7 +398,7 @@ end
 
 @noinline throw_no_kernel(op) = throw(ArgumentError(
     "no kernel selected for op `:$(opname(op))`; call `use_kernel!(:$(opname(op)), name)`, or give " *
-    "the op a default with `KernelOps.@default_kernel`. Kernels: " *
+    "the op a default with `KernelDispatch.@default_kernel`. Kernels: " *
     _names(keys(get(KERNELS, opname(op), Dict())))))
 
 @noinline throw_stale_switch(op) = throw(ArgumentError(

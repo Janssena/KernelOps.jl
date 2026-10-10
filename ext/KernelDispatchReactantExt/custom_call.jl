@@ -79,7 +79,7 @@ function _metal_kernel_lib(name, libpath, operands, result_shapes, layout; grid,
 end
 
 """
-    KernelOps.custom_call(::MetalBackendTag, entry, path, operands, result_shapes, layout; kw...)
+    KernelDispatch.custom_call(::MetalBackendTag, entry, path, operands, result_shapes, layout; kw...)
 
 The Metal embedding: [`_metal_kernel_lib`](@ref) (`mps.metal_kernel_lib`).
 """

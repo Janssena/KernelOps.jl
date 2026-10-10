@@ -2,7 +2,7 @@
 
 [triton-msl](https://github.com/bledden/triton-msl) is a Metal backend for Triton: it lowers a
 `@triton.jit` kernel through Triton's own pipeline to Metal Shading Language and on to a
-`.metallib`. Compiled ahead of time, that file is just one more binary for KernelOps, registered exactly
+`.metallib`. Compiled ahead of time, that file is just one more binary for KernelDispatch, registered exactly
 like the hand-written one in [tutorial 2](2-registering-kernels.md).
 
 This is for example how [trifast](https://github.com/latkins/trifast)'s triangle-attention kernels reach
@@ -34,14 +34,14 @@ uv pip install triton-msl            # or: uv pip install -e path/to/triton-msl
 
 ## Writing the kernel for a Julia caller
 
-A Triton kernel compiled for KernelOps is called with Julia's arrays, so it has to follow the
+A Triton kernel compiled for KernelDispatch is called with Julia's arrays, so it has to follow the
 conventions of the binary it becomes.
 
 - **Pointers are raw buffers of Julia arrays**, which are **column-major**: element `(r, c)` of a
   `rows×cols` matrix is at `c * rows + r` (0-based). Index them that way, not with PyTorch's
   row-major strides.
 - **Scalars must have the types the signature says**: `i32` ↔ `Int32`, `fp32` ↔ `Float32`.
-- **`tl.program_id(axis)`** is the threadgroup's position in the grid KernelOps dispatches. With
+- **`tl.program_id(axis)`** is the threadgroup's position in the grid KernelDispatch dispatches. With
   `tile=1` on the binary, one threadgroup per item, `tl.program_id(0)` runs over the call's `extent`.
 - **`tl.constexpr` arguments are compiled in.** They are not passed at launch, so they belong in the
   binary's name and in the variant key.
@@ -121,8 +121,8 @@ out.mkdir(exist_ok=True)
 (out / "sdpa_fwd.metallib").write_bytes(compiled.asm["metallib"])
 
 msl = compiled.asm["msl"]
-assert "_bpk" not in msl, "packed-scalar ABI: KernelOps binds one buffer per argument"
-# The file is named after the Triton function, so its entry needs no recording: KernelOps defaults
+assert "_bpk" not in msl, "packed-scalar ABI: KernelDispatch binds one buffer per argument"
+# The file is named after the Triton function, so its entry needs no recording: KernelDispatch defaults
 # `entry` to the file name.
 (out / "sdpa_fwd.json").write_text(json.dumps({
     "threadgroup": compiled.metadata.block_size,   # NOT num_warps * 32
@@ -145,7 +145,7 @@ What to take from each line:
   `metadata.num_warps` is unrelated: a fixed 4. Dispatching with `num_warps * 32` launches too few
   threads, and most of the tile silently goes unwritten.
 - **Check the binding ABI.** Most kernels are lowered generically, and every argument, scalars
-  included, gets its own buffer in order: what KernelOps binds. A kernel that routes to one of
+  included, gets its own buffer in order: what KernelDispatch binds. A kernel that routes to one of
   triton-msl's specialised templates instead takes its pointers first and **packs every scalar into
   one trailing `constant uint* _bpk` buffer**. Binding that positionally doesn't error: a scalar
   lands where the kernel reads a loop bound, which can read as garbage and **hang the GPU**. Refuse
@@ -171,7 +171,7 @@ function forward(op::SDPA, kern::SDPATriton, q, k, v)
 end
 # The key carries what the binary was compiled for: d ≤ 16, dv ≤ 8.
 variant_key(::SDPA, ::SDPATriton, q, k, v, o, n, m, d, dv, scale) =
-    (nameof(KernelOps.realtype(eltype(q))), d <= 16 && dv <= 8)
+    (nameof(KernelDispatch.realtype(eltype(q))), d <= 16 && dv <= 8)
 
 const TRITON_DIR = joinpath(@__DIR__, "..", "kernels", "sdpa_triton_d16_m64_dv8")
 
@@ -206,7 +206,7 @@ Then check the bindings against the Triton signature, and the output against the
 ```julia
 julia> use_kernel!(:sdpa, :triton)
 
-julia> map(first, only(KernelOps.record_bindings(() -> SDPA()(q, k, v))).slots)
+julia> map(first, only(KernelDispatch.record_bindings(() -> SDPA()(q, k, v))).slots)
 (:in, :in, :in, :out, :scalar, :scalar, :scalar, :scalar, :scalar)   # q k v o N M D DV scale
 
 julia> Array(SDPA()(q, k, v)) ≈ SDPA()(Array(q), Array(k), Array(v))

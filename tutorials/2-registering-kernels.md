@@ -44,7 +44,7 @@ kernel void sdpa_fwd(
 )
 ```
 
-What KernelOps does with a binary like this:
+What KernelDispatch does with a binary like this:
 
 - It binds the arguments **in the order you give them**, from buffer index 0: an array as its device
   buffer, a scalar as a small buffer of its own (read it as `constant T&`). Under Reactant
@@ -78,7 +78,7 @@ end
 
 # Against the same argument list: one variant per element type.
 variant_key(::SDPA, ::FlashAttn, q, k, v, o, n, m, d, dv, scale) = (
-  nameof(KernelOps.realtype(eltype(q))),
+  nameof(KernelDispatch.realtype(eltype(q))),
 )
 ```
 
@@ -134,12 +134,12 @@ independent, and often differ: trifast's `_bwd_q.metallib` launches `_bwd_q` and
 add_variant!(SDPA(), FlashAttn(), (:Float32,); fwd=KernelBinary(METALLIB; entry="sdpa_fwd", threadgroup=64))
 ```
 
-No `register_kernel!` is needed first: KernelOps registers kernels on first use.
+No `register_kernel!` is needed first: KernelDispatch registers kernels on first use.
 
 `add_variant!` **copies** the file into the registry and writes a manifest:
 
 ```
-~/.cache/KernelOps/ops/SDPAOps.sdpa/flash/
+~/.cache/KernelDispatch/ops/SDPAOps.sdpa/flash/
 ├── fwd_14162b5b.metallib
 └── manifest.toml
 ```
@@ -242,14 +242,14 @@ function forward(op::SDPA, kern::SDPAKA, q, k, v)
     return only(result)
 end
 variant_key(::SDPA, ::SDPAKA, o, q, k, v, d, n, m, dv, scale) = (
-  nameof(KernelOps.realtype(eltype(q))),
+  nameof(KernelDispatch.realtype(eltype(q))),
 )
 
 # The tile size is compiled in: appended as a `Val`, it takes no argument slot.
 extras(::SDPA, ::SDPAKA, b::KernelBinary) = (Val(b.params.tg),)
 ```
 
-KernelOps builds KA's context for the threadgroups it launches (`groups × tg` work items) and
+KernelDispatch builds KA's context for the threadgroups it launches (`groups × tg` work items) and
 dispatches them the way the backend's KA kernels expect. Define the type and these methods first:
 compiling below uses its `source_tag`.
 
@@ -261,7 +261,7 @@ argtypes = (
   Int32, Int32, Int32, Int32, Float32, Val{64}                          # d, n, m, dv, scale, TG
 )
 
-fwd = ka_compile(KernelOps.MetalBackendTag(), sdpa_ka!, argtypes;
+fwd = ka_compile(KernelDispatch.MetalBackendTag(), sdpa_ka!, argtypes;
   tg=64, name="sdpa_fwd_$(source_tag(SDPAKA()))", params=(; tg=64)
 )
 ```
@@ -280,7 +280,7 @@ fwd = ka_compile(KernelOps.MetalBackendTag(), sdpa_ka!, argtypes;
   without error, so compile KA kernels with `ka_compile`.
 - Its `tile` is `(tg, 1, 1)`, one item per thread, as `sdpa_ka!` indexes (`i` from the group and
   lane). A kernel whose threads each cover several items passes `tile=` to `ka_compile`.
-- It is built in `ka_binary_cache_dir()` (`~/.cache/KernelOps/ka`) and copied into the registry by
+- It is built in `ka_binary_cache_dir()` (`~/.cache/KernelDispatch/ka`) and copied into the registry by
   `add_variant!`.
 
 ### Registering it
@@ -302,7 +302,7 @@ function build!(op::SDPA, kern::SDPAKA, key::Tuple)
     tg = 64
     argtypes = (Vector{Float32}, Vector{Float32}, Vector{Float32}, Vector{Float32},
         Int32, Int32, Int32, Int32, Float32, Val{tg})
-    fwd = ka_compile(KernelOps.MetalBackendTag(), sdpa_ka!, argtypes;
+    fwd = ka_compile(KernelDispatch.MetalBackendTag(), sdpa_ka!, argtypes;
         tg, name="sdpa_fwd_$(source_tag(kern))", params=(; tg))
     add_variant!(op, kern, key; fwd)
     return nothing
@@ -329,7 +329,7 @@ Its manifest records `is_ka = true`, the tile and the tuning numbers:
 `record_bindings(f)` runs `f` with every launch replaced by a record of what it would bind:
 
 ```julia
-julia> label, slots, groups = only(KernelOps.record_bindings(() -> SDPA()(q, k, v)));
+julia> label, slots, groups = only(KernelDispatch.record_bindings(() -> SDPA()(q, k, v)));
 
 julia> label => map(first, slots)          # with `:flash` selected
 :fwd => (:in, :in, :in, :out, :scalar, :scalar, :scalar, :scalar, :scalar)
@@ -349,12 +349,12 @@ is the number of threadgroups along each axis, `cld.(extent, tile)`: with 100 qu
 binding rules. A tuner compiling candidates calls it directly, without registering each one:
 
 ```julia
-cand = ka_compile(KernelOps.MetalBackendTag(), sdpa_ka!, argtypes; tg=128, name="sdpa_fwd_t128")
+cand = ka_compile(KernelDispatch.MetalBackendTag(), sdpa_ka!, argtypes; tg=128, name="sdpa_fwd_t128")
 o, = run_binary(cand, OutArray(Float32, dv, n), q, k, v, d, n, m, dv, scale; extent=n)
 ```
 
-`prepare_launch` (same arguments) returns the launch as a `KernelOps.Launch` without running it, so one
-prepared launch can be both checked (`KernelOps.execute(l)`) and timed (`time_binary(l)`).
+`prepare_launch` (same arguments) returns the launch as a `KernelDispatch.Launch` without running it, so one
+prepared launch can be both checked (`KernelDispatch.execute(l)`) and timed (`time_binary(l)`).
 
 `time_binary` reports device time: `reps` dispatches back to back in one command buffer, timed by the
 device's own timestamps, so the host's launch latency is excluded. A vector of launches is timed as a
@@ -362,7 +362,7 @@ sequence, every repetition dispatching all of them in order. Together with `reco
 records carry each `Launch`, that times everything one op call launches:
 
 ```julia
-launches = [r.launch for r in KernelOps.record_bindings(() -> SDPA()(q, k, v))]
+launches = [r.launch for r in KernelDispatch.record_bindings(() -> SDPA()(q, k, v))]
 t = time_binary(launches; reps=10)      # seconds per call, kernels only
 ```
 

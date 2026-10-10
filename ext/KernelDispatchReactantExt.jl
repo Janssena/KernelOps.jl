@@ -1,13 +1,13 @@
-module KernelOpsReactantExt
+module KernelDispatchReactantExt
 
 # Note: A gradient traced THROUGH such a call throws (`traced_autodiff`): Enzyme-JAX cannot differentiate
 # a custom call yet (EnzymeAD/Enzyme#2516). `_attach_reverse_rule!` (custom_call.jl) is kept for when
 # it can. Calling an op's `backward` on traced arrays works today: it is ordinary traced code.
 
-using KernelOps
+using KernelDispatch
 using Reactant: Reactant, AnyTracedRArray, TracedRNumber
 
-const KO = KernelOps
+const KO = KernelDispatch
 
 KO.realtype(::Type{TracedRNumber{T}}) where T = T
 KO.traced_autodiff(::AnyTracedRArray) = Reactant.WITHIN_AUTODIFF[]
@@ -36,7 +36,7 @@ end
 KO.device_zeros(::AnyTracedRArray, ::Type{T}, dims::Integer...) where {T} =
     _mat(Reactant.Ops.fill(zero(T), Int.(dims)))
 
-include("KernelOpsReactantExt/custom_call.jl")
+include("KernelDispatchReactantExt/custom_call.jl")
 
 _mat(x) = Reactant.TracedUtils.materialize_traced_array(x)
 

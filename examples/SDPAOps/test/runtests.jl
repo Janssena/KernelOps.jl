@@ -1,7 +1,7 @@
 # The tutorial example, checked on Metal: both kernels against the host implementation, switching,
 # the bindings each binary gets, and Enzyme gradients against Enzyme through the host path.
 
-using SDPAOps, KernelOps, Metal, Enzyme, Random, Test
+using SDPAOps, KernelDispatch, Metal, Enzyme, Random, Test
 
 rng = Xoshiro(1)
 d, n, m, dv = 16, 100, 70, 8
@@ -13,9 +13,9 @@ ref = SDPA()(q, k, v)                                    # host arrays: the host
     @test current_kernel(:sdpa) === :flash                # the `@default_kernel`
     @test Array(SDPA()(qd, kd, vd)) ≈ ref
     # One call with a particular kernel: its `forward`, no switch.
-    @test Array(KernelOps.forward(SDPA(), SDPAOps.SDPAKA(), qd, kd, vd)) ≈ ref
+    @test Array(KernelDispatch.forward(SDPA(), SDPAOps.SDPAKA(), qd, kd, vd)) ≈ ref
     @test current_kernel(SDPA()) === :flash               # nothing switched
-    rec(kern) = map(first, only(KernelOps.record_bindings(() -> KernelOps.forward(SDPA(), kern, qd, kd, vd))).slots)
+    rec(kern) = map(first, only(KernelDispatch.record_bindings(() -> KernelDispatch.forward(SDPA(), kern, qd, kd, vd))).slots)
     @test rec(SDPAOps.FlashAttn()) == (:in, :in, :in, :out, :scalar, :scalar, :scalar, :scalar, :scalar)
     # A KA binary takes the state word and KA's context first.
     @test rec(SDPAOps.SDPAKA()) == (:bytes, :bytes, :out, :in, :in, :in, :scalar, :scalar, :scalar, :scalar, :scalar)

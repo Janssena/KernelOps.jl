@@ -10,7 +10,7 @@
 #   example     the example's own test file, run as part of this suite
 #   Reactant    both kernels traced as custom calls (needs the jax-mps plugin, see mps_client.jl)
 
-using Test, Random, KernelOps, SDPAOps, Enzyme, Reactant
+using Test, Random, KernelDispatch, SDPAOps, Enzyme, Reactant
 # Metal (and the jax-mps client) only exist on a Mac: elsewhere these sections skip.
 @static if Sys.isapple()
     using Metal
@@ -50,8 +50,8 @@ end
     d, n, m, dv = 4, 3, 5, 2
     q, k, v = (Float64.(x) for x in inputs(rng, d, n, m, dv))
     w = randn(rng, dv, n)
-    loss(q, k, v) = sum(KernelOps.host(SDPA(), q, k, v) .* w)
-    dq, dk, dv_ = KernelOps.backward(SDPA(), FlashAttn(), (q, k, v), nothing, w)
+    loss(q, k, v) = sum(KernelDispatch.host(SDPA(), q, k, v) .* w)
+    dq, dk, dv_ = KernelDispatch.backward(SDPA(), FlashAttn(), (q, k, v), nothing, w)
     function fd(f, x, i; h=1e-6)
         xp, xm = copy(x), copy(x)
         xp[i] += h
@@ -68,7 +68,7 @@ end
         @test dv_[i] ≈ fd(x -> loss(q, k, x), v, i) atol = 1e-6
     end
     # The gradients do not depend on which kernel produced the forward.
-    @test KernelOps.backward(SDPA(), SDPAKA(), (q, k, v), nothing, w) == (dq, dk, dv_)
+    @test KernelDispatch.backward(SDPA(), SDPAKA(), (q, k, v), nothing, w) == (dq, dk, dv_)
 end
 
 if !Sys.isapple() || !Metal.functional()
@@ -78,7 +78,7 @@ else
         rng = Xoshiro(3)
         @testset "$kern, d=$d n=$n m=$m dv=$dv" for kern in (FlashAttn(), SDPAKA()), (d, n, m, dv) in SDPA_SIZES
             q, k, v = inputs(rng, d, n, m, dv)
-            o = KernelOps.forward(SDPA(), kern, MtlArray(q), MtlArray(k), MtlArray(v))
+            o = KernelDispatch.forward(SDPA(), kern, MtlArray(q), MtlArray(k), MtlArray(v))
             @test o isa MtlArray && size(o) == (dv, n)
             @test Array(o) ≈ sdpa_reference(q, k, v) rtol = 1e-3
         end
@@ -87,21 +87,21 @@ else
             q, k, v = inputs(rng, 16, 10, 7, 8)
             qd, kd, vd = MtlArray(q), MtlArray(k), MtlArray(v)
             for kern in (FlashAttn(), SDPAKA())
-                KernelOps.forward(SDPA(), kern, qd, kd, vd)
-                vs = KernelOps.variants(SDPA(), kern)
+                KernelDispatch.forward(SDPA(), kern, qd, kd, vd)
+                vs = KernelDispatch.variants(SDPA(), kern)
                 @test collect(keys(vs)) == [(:Float32,)]
                 bin = vs[(:Float32,)][:fwd]
                 @test isfile(bin.file)
-                @test isfile(joinpath(KernelOps.kernel_dir(SDPA(), kern), "manifest.toml"))
+                @test isfile(joinpath(KernelDispatch.kernel_dir(SDPA(), kern), "manifest.toml"))
                 t = mtime(bin.file)
-                KernelOps.forward(SDPA(), kern, qd, kd, vd)             # found, not rebuilt
-                @test KernelOps.variants(SDPA(), kern) === vs && mtime(bin.file) == t
+                KernelDispatch.forward(SDPA(), kern, qd, kd, vd)             # found, not rebuilt
+                @test KernelDispatch.variants(SDPA(), kern) === vs && mtime(bin.file) == t
             end
         end
 
         @testset "no variant for an element type the kernel lacks" begin
             # `FlashAttn` is Float32 only: its `build!` declines any other key.
-            @test_throws ArgumentError KernelOps.variant(SDPA(), FlashAttn(), (:Float16,))
+            @test_throws ArgumentError KernelDispatch.variant(SDPA(), FlashAttn(), (:Float16,))
         end
     end
 end
@@ -131,7 +131,7 @@ else
             # The kernel is named in the call, not switched: nothing global changes under the trace.
             for kern in (FlashAttn(), SDPAKA())
                 @testset "$kern" begin
-                    f(q, k, v) = KernelOps.forward(SDPA(), kern, q, k, v)
+                    f(q, k, v) = KernelDispatch.forward(SDPA(), kern, q, k, v)
                     @test Array(@jit f(args...)) ≈ ref rtol = 1e-3
                     @test occursin("mps.metal_kernel_lib", repr(Reactant.@code_hlo optimize = false f(args...)))
                 end

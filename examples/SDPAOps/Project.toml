@@ -4,11 +4,11 @@ version = "0.1.0"
 
 [deps]
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
-KernelOps = "8d34074f-262e-46e2-9f95-b1abcc740b38"
+KernelDispatch = "8d34074f-262e-46e2-9f95-b1abcc740b38"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 
 [sources]
-KernelOps = {path = "../.."}
+KernelDispatch = {path = "../.."}
 
 [compat]
 KernelAbstractions = "0.9"

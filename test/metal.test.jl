@@ -3,14 +3,14 @@
 # `ka_compile`, unregistered binaries, timing (`LogitScale`). The forward path of a real op is in
 # sdpa.test.jl.
 
-using Test, Random, KernelOps, SDPAOps, Enzyme
+using Test, Random, KernelDispatch, SDPAOps, Enzyme
 # Metal (and the jax-mps client) only exist on a Mac: elsewhere these sections skip.
 @static if Sys.isapple()
     using Metal
 end
 isdefined(@__MODULE__, :Residual) || include("fixtures.jl")
 
-const KOM = KernelOps
+const KOM = KernelDispatch
 
 if !Sys.isapple() || !Metal.functional()
     @warn "Metal not functional; skipping eager tests" maxlog = 1
@@ -110,18 +110,18 @@ else
     end
 
     @testset "ka_compile" begin
-        be = KernelOps.MetalBackendTag()
+        be = KernelDispatch.MetalBackendTag()
         argtypes = (Vector{Float32}, Vector{Float32}, Float32, Int32, Val{64})
         b1 = ka_compile(be, logit_scale_kernel!, argtypes; tg=64, name="scale_t64", params=(; tg=64))
         p1 = b1.file
         @test b1 isa KernelBinary && b1.is_ka && b1.threadgroup == 64 && b1.params == (; tg=64)
         @test b1.tile == (64, 1, 1)
-        @test isfile(p1) && dirname(p1) == KernelOps.ka_binary_cache_dir()
+        @test isfile(p1) && dirname(p1) == KernelDispatch.ka_binary_cache_dir()
         # Found, not rebuilt; the registry copy is what a variant uses.
         t = mtime(p1)
         @test ka_compile(be, logit_scale_kernel!, argtypes; tg=64, name="scale_t64").file == p1 && mtime(p1) == t
         v = add_variant!(LogitScale(), LogitScaleKA(), (:copied,); main=b1)
-        @test dirname(v[:main].file) == KernelOps.kernel_dir(LogitScale(), LogitScaleKA()) && v[:main].is_ka
+        @test dirname(v[:main].file) == KernelDispatch.kernel_dir(LogitScale(), LogitScaleKA()) && v[:main].is_ka
     end
 
     @testset "launch size: extent and tile" begin
@@ -138,11 +138,11 @@ else
         @test err isa ArgumentError && occursin("no launch size", err.msg)
 
         # A kernel without a `forward` method fails loudly instead of passing the op's arguments through.
-        err = try KernelOps.forward(LogitScale(), LogitScaleKA(), args()...); nothing catch e; e end
+        err = try KernelDispatch.forward(LogitScale(), LogitScaleKA(), args()...); nothing catch e; e end
         @test err isa ArgumentError && occursin("has no `forward`", err.msg)
 
         # Two items per thread: `tile` says so, and `extent` still counts items.
-        bin2 = ka_compile(KernelOps.MetalBackendTag(), logit_scale2_kernel!,
+        bin2 = ka_compile(KernelDispatch.MetalBackendTag(), logit_scale2_kernel!,
             (Vector{Float32}, Vector{Float32}, Float32, Int32, Val{LS_TG}); tg=LS_TG,
             name="test_scale2_t$LS_TG", tile=2LS_TG)
         @test bin2.tile == (2LS_TG, 1, 1)
@@ -154,7 +154,7 @@ else
         @test Array(y2) ≈ 2.0f0 .* x2                           # 3 threadgroups of 64 threads
     end
     @testset "max_threads and time_binary" begin
-        be = KernelOps.MetalBackendTag()
+        be = KernelDispatch.MetalBackendTag()
         bin = register_logit_scale!()[:main]
         ls_args(n) = (OutArray(Float32, n), MtlArray(randn(rng, Float32, n)), 2.0f0, Int32(n), Val(LS_TG))
         tb(n; kw...) = minimum(time_binary(bin, ls_args(n)...; extent=n, kw...) for _ in 1:3)

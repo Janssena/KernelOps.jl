@@ -9,9 +9,9 @@
 # Runnable on its own:
 #     julia --project=test test/custom_call.test.jl
 
-using Test, KernelOps, Reactant
+using Test, KernelDispatch, Reactant
 
-const RX = Base.get_extension(KernelOps, :KernelOpsReactantExt)
+const RX = Base.get_extension(KernelDispatch, :KernelDispatchReactantExt)
 
 isdefined(@__MODULE__, :reverse_symbol) || include(joinpath(@__DIR__, "ir_utils.jl"))   # reverse_symbol, reverse_signature
 
@@ -74,7 +74,7 @@ emit(f, args...) = repr(Reactant.@code_hlo optimize = false donated_args = :none
         @test occursin(r"custom_call @mps\.metal_kernel_lib\([^)]*\).*-> \(tensor", ir)
 
         # Kept for the enzymexlamlir-opt half of the loop: run this module through the rule itself.
-        out = get(ENV, "KERNELOPS_DUMP_MLIR", "")
+        out = get(ENV, "KERNELDISPATCH_DUMP_MLIR", "")
         isempty(out) || (write(out, ir); @info "wrote module" out)
     end
 
@@ -91,10 +91,10 @@ emit(f, args...) = repr(Reactant.@code_hlo optimize = false donated_args = :none
     end
 
     @testset "custom_call dispatches on the backend" begin
-        @test_throws ArgumentError KernelOps.custom_call(KernelOps.CUDABackendTag(),
+        @test_throws ArgumentError KernelDispatch.custom_call(KernelDispatch.CUDABackendTag(),
             "_fwd", "/tmp/none.metallib", (), [(4,)], Any[]; grid=(1, 1, 1))
 
-        fwd(x) = KernelOps.custom_call(KernelOps.MetalBackendTag(), "_fwd", "/tmp/none.metallib",
+        fwd(x) = KernelDispatch.custom_call(KernelDispatch.MetalBackendTag(), "_fwd", "/tmp/none.metallib",
             (x,), [(4,)], Any[(:in, 0), (:out, 0)]; grid=(1, 1, 1), threadgroup=4)[1]
         @test occursin("mps.metal_kernel_lib", emit(fwd, Reactant.to_rarray(rand(Float32, 4))))
     end

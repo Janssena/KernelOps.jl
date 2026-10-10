@@ -13,8 +13,8 @@
 #
 # SDPAOps' cache is redirected too, so no test writes into the user's cache.
 
-using KernelOps, KernelAbstractions
-import KernelOps: opname, kernelname, host, forward, backward, variant_key, extras, OutArray
+using KernelDispatch, KernelAbstractions
+import KernelDispatch: opname, kernelname, host, forward, backward, variant_key, extras, OutArray
 
 # --- Residual ---------------------------------------------------------------------------------------
 
@@ -44,12 +44,12 @@ opname(::Residual) = :residual
 kernelname(::ResidualKA) = :ka
 kernelname(::ResidualPlain) = :plain
 host(::Residual, x, y, a) = a .* x .+ y
-variant_key(::Residual, ::ResidualKernels, args...) = (nameof(KernelOps.realtype(eltype(KernelOps._first_array(args)))),)
+variant_key(::Residual, ::ResidualKernels, args...) = (nameof(KernelDispatch.realtype(eltype(KernelDispatch._first_array(args)))),)
 # The tile size is compiled in: appended as a `Val`, it takes no slot.
 extras(::Residual, ::ResidualKA, b::KernelBinary) = (Val(b.params.tg),)
 
 # `:ka` unless switched: a default makes the op call inferred with no `use_kernel!`.
-KernelOps.@default_kernel Residual ResidualKA() ResidualPlain()
+KernelDispatch.@default_kernel Residual ResidualKA() ResidualPlain()
 
 forward(op::Residual, k::ResidualKernels, x, y, a) =
     only(call_binary(op, k, :fwd, OutArray(eltype(x), length(x)), x, y, Float32(a), Int32(length(x));
@@ -63,14 +63,14 @@ function backward(op::Residual, k::ResidualKernels, (x, y, a), z, dz)
 end
 
 const FIXTURE_CACHE = mktempdir()
-KernelOps.cache_dir(::Residual) = joinpath(FIXTURE_CACHE, "residual")
+KernelDispatch.cache_dir(::Residual) = joinpath(FIXTURE_CACHE, "residual")
 
 """
 Compile both binaries with `ka_compile` and register them as both kernels' Float32 variant. Selects
 nothing: `:ka` is the default, and a switch here would not be visible to the caller's block anyway.
 """
 function register_residual!(; tg=64)
-    be = KernelOps.MetalBackendTag()
+    be = KernelDispatch.MetalBackendTag()
     dir = joinpath(FIXTURE_CACHE, "bin")
     argt = (Vector{Float32}, Vector{Float32}, Vector{Float32}, Float32, Int32, Val{tg})
     fwd = ka_compile(be, residual_fwd!, argt; tg, name="residual_fwd_t$tg", params=(; tg), dir)
@@ -113,14 +113,14 @@ kernelname(::LogitScaleKA) = :ka
 kernelname(::LogitScaleTwo) = :two
 
 const LOGIT_CACHE = mktempdir()
-KernelOps.cache_dir(::LogitScale) = joinpath(LOGIT_CACHE, "logit_scale")
+KernelDispatch.cache_dir(::LogitScale) = joinpath(LOGIT_CACHE, "logit_scale")
 const LS_TG = 64
 
 "Compile the kernel (into the default temporary build directory) and register the binary as the op's variant."
 function register_logit_scale!(; tg=LS_TG)
     register_kernel!(LogitScale(), LogitScaleKA())
     argtypes = (Vector{Float32}, Vector{Float32}, Float32, Int32, Val{tg})
-    bin = ka_compile(KernelOps.MetalBackendTag(), logit_scale_kernel!, argtypes; tg, name="test_scale_t$tg")
+    bin = ka_compile(KernelDispatch.MetalBackendTag(), logit_scale_kernel!, argtypes; tg, name="test_scale_t$tg")
     add_variant!(LogitScale(), LogitScaleKA(), (); main=bin)
 end
 
@@ -136,4 +136,4 @@ end
 
 using SDPAOps
 const SDPA_CACHE = mktempdir()
-KernelOps.cache_dir(::SDPAOps.SDPA) = joinpath(SDPA_CACHE, "sdpa")
+KernelDispatch.cache_dir(::SDPAOps.SDPA) = joinpath(SDPA_CACHE, "sdpa")

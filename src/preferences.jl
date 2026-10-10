@@ -7,7 +7,7 @@ with [`set_default_kernel!`](@ref)), else `kernel₁`. The kernels listed are th
 
 Use it at the top level of the package declaring `Op`, after the kernels' `kernelname` methods:
 
-    KernelOps.@default_kernel Softmax OnlineSoftmax() TwoPassSoftmax()
+    KernelDispatch.@default_kernel Softmax OnlineSoftmax() TwoPassSoftmax()
 
 Outside a package (a script, `Main`) there are no preferences, and the default is `kernel₁`.
 """
@@ -73,7 +73,7 @@ function set_default_kernel!(op, kname::Symbol)
     names = map(kernelname, default_candidates(o))
     kname in names || throw(ArgumentError(
         "kernel `:$kname` is not a default candidate of op `:$(opname(o))`. Candidates: " *
-        _names(names) * " (listed in its `KernelOps.@default_kernel`)"))
+        _names(names) * " (listed in its `KernelDispatch.@default_kernel`)"))
     owner = _pref_owner(o)
     Preferences.set_preferences!(owner, pref_key(o) => String(kname); force=true)
     @info "Default kernel of op `:$(opname(o))` set to `:$kname` in $(owner)'s preferences. It takes " *

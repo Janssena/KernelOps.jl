@@ -24,12 +24,12 @@ struct SDPAKA <: AbstractKernel end          # a KernelAbstractions kernel, comp
 kernelname(::FlashAttn) = :flash             # optional (default = struct name, i.e. `:FlashAttn`)
 kernelname(::SDPAKA) = :ka
 
-KernelOps.@default_kernel SDPA FlashAttn() SDPAKA()
+KernelDispatch.@default_kernel SDPA FlashAttn() SDPAKA()
 ```
 
 - `@default_kernel` lists the kernels that can be the op's **default**. The first, `FlashAttn()`, is the
   default unless a preference names another (below).
-- **Nothing is registered by hand.** KernelOps' tables are filled at run time, on first use: the
+- **Nothing is registered by hand.** KernelDispatch' tables are filled at run time, on first use: the
   `@default_kernel` candidates when a name or `list_kernels` needs them, any other kernel when
   `use_kernel!` selects it.
 - **Names are optional.** An op and a kernel are named after their types unless they define `opname`
@@ -42,7 +42,7 @@ What a kernel needs beyond this is the subject of [tutorial 2](2-registering-ker
 ## Inspecting and switching for a session
 
 ```julia
-julia> using SDPAOps, KernelOps
+julia> using SDPAOps, KernelDispatch
 
 julia> current_kernel(:sdpa)
 :flash
@@ -81,7 +81,7 @@ To run one call with a particular kernel, inside a function or anywhere else, ca
 
 ```julia
 for kern in (FlashAttn(), SDPAKA())
-    o = KernelOps.forward(SDPA(), kern, q, k, v)    # a benchmark comparing kernels
+    o = KernelDispatch.forward(SDPA(), kern, q, k, v)    # a benchmark comparing kernels
 end
 ```
 
@@ -113,12 +113,12 @@ This writes a preference of the package that declares the op (`SDPAOps`) to the 
 In the next session `SDPAOps` re-precompiles once, with `:ka` baked in as the default:
 
 ```julia
-julia> using SDPAOps, KernelOps        # precompiles SDPAOps
+julia> using SDPAOps, KernelDispatch        # precompiles SDPAOps
 
 julia> current_kernel(:sdpa)
 :ka
 
-julia> KernelOps.default_kernel(SDPA())
+julia> KernelDispatch.default_kernel(SDPA())
 SDPAKA()
 ```
 
@@ -128,7 +128,7 @@ from the next session. A name that isn't one of the `@default_kernel` candidates
 ```
 julia> set_default_kernel!(:sdpa, :nope)
 ERROR: ArgumentError: kernel `:nope` is not a default candidate of op `:sdpa`. Candidates: :flash, :ka
-(listed in its `KernelOps.@default_kernel`)
+(listed in its `KernelDispatch.@default_kernel`)
 ```
 
 ### How this works
@@ -163,5 +163,5 @@ switches it for every caller, including libraries that were tested with another 
 - **A library never switches.** It can't anyway: `use_kernel!` refuses to run while precompiling,
   which includes a package's top level and its `__init__` while dependents precompile.
 - **A library that needs one particular kernel calls it directly**, past the selection:
-  `KernelOps.forward(SDPA(), FlashAttn(), q, k, v)`. Normally a library shouldn't care: all of an op's kernels
+  `KernelDispatch.forward(SDPA(), FlashAttn(), q, k, v)`. Normally a library shouldn't care: all of an op's kernels
   compute the same thing, and which one runs is the application's performance decision.
