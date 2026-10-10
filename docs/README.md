@@ -1,6 +1,6 @@
 # KernelOps.jl documentation
 
-The tutorials build on one example package, [`examples/SDPAOps`](examples/SDPAOps): scaled
+The tutorials build on one example package, [`examples/SDPAOps`](../examples/SDPAOps): scaled
 dot-product attention as an op with two kernels, a hand-written Metal binary (standing in for one from
 Triton) and a KernelAbstractions kernel. Every snippet is taken from it, and its test suite
 (`examples/SDPAOps/test/runtests.jl`) checks them on Metal.
@@ -23,7 +23,7 @@ From a Julia environment of your own:
 ```julia
 using Pkg
 Pkg.develop([PackageSpec(path="path/to/KernelOps.jl"),
-             PackageSpec(path="path/to/KernelOps.jl/docs/examples/SDPAOps")])
+             PackageSpec(path="path/to/KernelOps.jl/examples/SDPAOps")])
 Pkg.add(["Metal", "Enzyme"])
 ```
 
