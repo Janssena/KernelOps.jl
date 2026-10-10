@@ -182,5 +182,16 @@ else
 
         # The registered variant binds the same as the binary itself.
         @test time_binary(LogitScale(), LogitScaleKA(), :main, ls_args(1000)...; extent=1000) isa Float64
+
+        # A sequence of launches, timed as one: each repetition dispatches all of them in order.
+        l1 = prepare_launch(bin, ls_args(1000)...; extent=1000)
+        l2 = prepare_launch(bin, ls_args(4000)...; extent=4000)
+        ts = @inferred time_binary([l1, l2]; reps=2)
+        @test ts isa Float64 && ts > 0
+        @test time_binary([l1]) > 0 && time_binary(l1) > 0       # one launch: the single form
+        @test_throws ArgumentError time_binary(KOM.Launch[])
+        @test_throws ArgumentError time_binary([l1, l2]; reps=0)
+        lbig = prepare_launch(big, ls_args(64)...; extent=64)
+        @test_throws ArgumentError time_binary([l1, lbig])        # over a pipeline's limit
     end
 end

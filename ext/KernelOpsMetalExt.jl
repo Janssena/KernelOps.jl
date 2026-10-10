@@ -66,18 +66,31 @@ function _set_slots!(enc, args)
     return nothing
 end
 
-# Encode `reps` dispatches of `entry` over `grid` into one command buffer, commit and wait for it.
-function _run(path, entry, args, grid::NTuple{3,Int}, tg::Integer, reps::Int)
-    _check_limit(path, entry, tg)
+# Encode `reps` repetitions of a sequence of dispatches — `(binary, slots, grid)` triples, in order —
+# into one command buffer, commit and wait for it.
+function _run(items, reps::Int)
+    for (b, _, _) in items
+        _check_limit(b.file, b.entry, b.threadgroup)
+    end
     # Metal.jl batches its own commands (fills, copies, argument-buffer uploads) on ITS queue; this
     # launch commits to another. Without draining Metal.jl first the kernel can run before they land.
     Metal.synchronize()
     cb = Metal.MTLCommandBuffer(queue())
     enc = Metal.MTLComputeCommandEncoder(cb)
-    Metal.set_function!(enc, pipeline(path, entry))
-    _set_slots!(enc, args)
-    for _ in 1:reps
-        Metal.dispatchThreadgroups!(enc, Metal.MTLSize(grid...), Metal.MTLSize(Int(tg), 1, 1))
+    one = length(items) == 1
+
+    if one          # one binary: bind once, dispatch `reps` times
+        b, slots, _ = only(items)
+        Metal.set_function!(enc, pipeline(b.file, b.entry))
+        _set_slots!(enc, slots)
+    end
+    
+    for _ in 1:reps, (b, slots, grid) in items
+        if !one
+            Metal.set_function!(enc, pipeline(b.file, b.entry))
+            _set_slots!(enc, slots)
+        end
+        Metal.dispatchThreadgroups!(enc, Metal.MTLSize(grid...), Metal.MTLSize(Int(b.threadgroup), 1, 1))
     end
     Metal.endEncoding!(enc)
     Metal.commit!(cb)
@@ -87,12 +100,12 @@ function _run(path, entry, args, grid::NTuple{3,Int}, tg::Integer, reps::Int)
 end
 
 KO.encode_launch(::KO.MetalBackendTag, b::KO.KernelBinary, slots, grid::NTuple{3,Int}) =
-    (_run(b.file, b.entry, slots, grid, b.threadgroup, 1); nothing)
+    (_run([(b, slots, grid)], 1); nothing)
 
-# The `reps` dispatches share one command buffer: its GPU timestamps exclude all host latency.
-function KO.device_time(::KO.MetalBackendTag, b::KO.KernelBinary, slots, grid::NTuple{3,Int}; reps::Int)
+# The repetitions share one command buffer: its GPU timestamps exclude all host latency.
+function KO.device_time(::KO.MetalBackendTag, items::AbstractVector; reps::Int)
     reps >= 1 || throw(ArgumentError("`reps` must be at least 1, got $reps"))
-    cb = _run(b.file, b.entry, slots, grid, b.threadgroup, reps)
+    cb = _run(items, reps)
     return (cb.GPUEndTime - cb.GPUStartTime) / reps
 end
 

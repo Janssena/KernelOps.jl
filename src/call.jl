@@ -219,19 +219,24 @@ max_threads(be::KernelBackend, ::KernelBinary) = throw(ArgumentError(
 ))
 
 """
+    device_time(backend, items; reps) -> Float64
     device_time(backend, binary::KernelBinary, slots, grid::NTuple{3,Int}; reps) -> Float64
 
-Seconds per dispatch of `reps` dispatches of `binary` over `grid`, back to back in ONE command buffer
-(or stream segment), from the device's own timestamps. `slots` are the bound arguments in slot order,
-as [`encode_launch`](@ref) takes them. No warm-up. Implemented by the backend extension; most callers
-want [`time_binary`](@ref), which binds the slots.
+Seconds per repetition of `reps` repetitions of a sequence of dispatches, all back to back in ONE
+command buffer (or stream segment), from the device's own timestamps. `items` are
+`(binary, slots, grid)` triples in launch order, `slots` the bound arguments in slot order as
+[`encode_launch`](@ref) takes them; the second form times one dispatch. No warm-up. Implemented by the
+backend extension (the sequence form); most callers want [`time_binary`](@ref), which binds the slots.
 """
-device_time(be::KernelBackend, ::KernelBinary, slots, grid; reps) = throw(ArgumentError(
+device_time(be::KernelBackend, items::AbstractVector; reps) = throw(ArgumentError(
     "no `device_time` for backend $(typeof(be)); load the package for that backend"
 ))
+device_time(be::KernelBackend, b::KernelBinary, slots, grid; reps) =
+    device_time(be, [(b, slots, grid)]; reps)
 
 """
     time_binary(l::Launch; reps=3, warmup=1) -> Float64
+    time_binary(ls::AbstractVector{<:Launch}; reps=3, warmup=1) -> Float64
     time_binary(b::KernelBinary, args...; extent, extras=(), reps=3, warmup=1)
     time_binary(op, kernel, name, args...; key=variant_key(op, kernel, args...), extent, reps=3, warmup=1)
 
@@ -239,8 +244,11 @@ Seconds per dispatch of a binary on the device: `warmup` untimed launches, then 
 [`device_time`](@ref) of `reps` dispatches back to back, from the device's own timestamps. Host-side
 launch latency is excluded. Repeating the call and taking a minimum is the caller's policy.
 
-The core form times a prepared [`Launch`](@ref); the second prepares one for a binary that need not
-be registered (a tuner's candidate); the third resolves the registered variant and its
+The core form times a prepared [`Launch`](@ref). A vector of launches is timed as a sequence: each
+repetition dispatches all of them in order, in the same command buffer, and the result is seconds
+per repetition — a whole forward or backward of several binaries (`record_bindings` hands over the
+launches an op call makes). The third form prepares a launch for a binary that need not be
+registered (a tuner's candidate); the fourth resolves the registered variant and its
 [`extras`](@ref) as [`call_binary`](@ref) does. All bind with [`bind_slots`](@ref), exactly as an
 eager [`execute`](@ref).
 
@@ -248,25 +256,32 @@ eager [`execute`](@ref).
 so their contents afterwards are meaningless and are not returned. The `reps` dispatches share cache
 state, which flatters a bandwidth-bound kernel slightly against a cold call.
 
-Throws if the binary's threadgroup exceeds [`max_threads`](@ref), on host arrays, and while tracing
-(timing is eager device work, which the tracer would capture).
+Throws if a binary's threadgroup exceeds [`max_threads`](@ref), on host arrays, for launches on
+different backends, and while tracing (timing is eager device work, which the tracer would capture).
 """
-function time_binary(l::Launch; reps::Integer=3, warmup::Integer=1)
-    be = _timing_backend(l.args)
+time_binary(l::Launch; reps::Integer=3, warmup::Integer=1) = time_binary([l]; reps, warmup)
+
+function time_binary(ls::AbstractVector{<:Launch}; reps::Integer=3, warmup::Integer=1)
+    isempty(ls) && throw(ArgumentError("no launches to time"))
+    be = _timing_backend(first(ls).args)
     reps >= 1 || throw(ArgumentError("`reps` must be at least 1, got $reps"))
-    b = l.binary
-    lim = max_threads(be, b)
-    b.threadgroup <= lim || throw(ArgumentError(
-        "threadgroup $(b.threadgroup) exceeds this pipeline's limit of $lim; " *
-        "dispatching over it returns garbage AND a fast time"
-    ))
-    
-    _, slots = bind_slots(_first_array(l.args), l.prelude, l.args, l.extras)
-    for _ in 1:warmup
-        encode_launch(be, b, slots, l.grid)
+    items = map(ls) do l
+        _timing_backend(l.args) == be || throw(ArgumentError(
+            "launches on different backends cannot be timed as one sequence"))
+        b = l.binary
+        lim = max_threads(be, b)
+        b.threadgroup <= lim || throw(ArgumentError(
+            "threadgroup $(b.threadgroup) of `$(b.entry)` exceeds this pipeline's limit of $lim; " *
+            "dispatching over it returns garbage AND a fast time"
+        ))
+        _, slots = bind_slots(_first_array(l.args), l.prelude, l.args, l.extras)
+        (b, slots, l.grid)
+    end
+    for _ in 1:warmup, (b, slots, grid) in items
+        encode_launch(be, b, slots, grid)
     end
 
-    return Float64(device_time(be, b, slots, l.grid; reps=Int(reps)))
+    return Float64(device_time(be, items; reps=Int(reps)))
 end
 
 function time_binary(b::KernelBinary, args...; 

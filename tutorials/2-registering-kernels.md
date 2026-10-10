@@ -356,6 +356,16 @@ o, = run_binary(cand, OutArray(Float32, dv, n), q, k, v, d, n, m, dv, scale; ext
 `prepare_launch` (same arguments) returns the launch as a `KernelOps.Launch` without running it, so one
 prepared launch can be both checked (`KernelOps.execute(l)`) and timed (`time_binary(l)`).
 
+`time_binary` reports device time: `reps` dispatches back to back in one command buffer, timed by the
+device's own timestamps, so the host's launch latency is excluded. A vector of launches is timed as a
+sequence, every repetition dispatching all of them in order. Together with `record_bindings`, whose
+records carry each `Launch`, that times everything one op call launches:
+
+```julia
+launches = [r.launch for r in KernelOps.record_bindings(() -> SDPA()(q, k, v))]
+t = time_binary(launches; reps=10)      # seconds per call, kernels only
+```
+
 ## Kernels from another package
 
 The kernel doesn't have to live in the op's package. Anyone can define a kernel type for `SDPA`, give
